@@ -22,6 +22,7 @@ from .utils import alist, eur, gc_collect, gc_count
 from .test_copy import sample_text, sample_binary, sample_binary_rows  # noqa
 from .test_copy import sample_values, sample_records, sample_tabledef
 from .test_copy import py_to_raw, special_chars
+from .test_adapt import StrNoneDumper, StrNoneBinaryDumper
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -336,6 +337,30 @@ async def test_subclass_adapter(aconn, format):
     await cur.execute("select data from copy_in")
     rec = await cur.fetchone()
     assert rec[0] == "hellohello"
+
+
+@pytest.mark.parametrize("format", Format)
+async def test_subclass_nulling_dumper(aconn, format):
+    Base: type = StrNoneDumper if format == Format.TEXT else StrNoneBinaryDumper
+
+    class MyStrDumper(Base):  # type: ignore
+        def dump(self, obj):
+            return super().dump(obj) if obj else None
+
+    aconn.adapters.register_dumper(str, MyStrDumper)
+
+    cur = aconn.cursor()
+    await ensure_table(cur, sample_tabledef)
+
+    async with cur.copy(
+        f"copy copy_in (data) from stdin (format {format.name})"
+    ) as copy:
+        await copy.write_row(("hello",))
+        await copy.write_row(("",))
+
+    await cur.execute("select data from copy_in order by col1")
+    recs = await cur.fetchall()
+    assert recs == [("hello",), (None,)]
 
 
 @pytest.mark.parametrize("format", Format)

@@ -19,6 +19,7 @@ from psycopg.types.hstore import register_hstore
 from psycopg.types.numeric import Int4
 
 from .utils import eur, gc_collect, gc_count
+from .test_adapt import StrNoneDumper, StrNoneBinaryDumper
 
 pytestmark = pytest.mark.crdb_skip("copy")
 
@@ -340,6 +341,27 @@ def test_subclass_adapter(conn, format):
 
     rec = cur.execute("select data from copy_in").fetchone()
     assert rec[0] == "hellohello"
+
+
+@pytest.mark.parametrize("format", Format)
+def test_subclass_nulling_dumper(conn, format):
+    Base: type = StrNoneDumper if format == Format.TEXT else StrNoneBinaryDumper
+
+    class MyStrDumper(Base):  # type: ignore
+        def dump(self, obj):
+            return super().dump(obj) if obj else None
+
+    conn.adapters.register_dumper(str, MyStrDumper)
+
+    cur = conn.cursor()
+    ensure_table(cur, sample_tabledef)
+
+    with cur.copy(f"copy copy_in (data) from stdin (format {format.name})") as copy:
+        copy.write_row(("hello",))
+        copy.write_row(("",))
+
+    recs = cur.execute("select data from copy_in order by col1").fetchall()
+    assert recs == [("hello",), (None,)]
 
 
 @pytest.mark.parametrize("format", Format)
