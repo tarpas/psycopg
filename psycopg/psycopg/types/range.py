@@ -315,7 +315,7 @@ class RangeDumper(BaseRangeDumper):
     The dumper can upgrade to one specific for a different range type.
     """
 
-    def dump(self, obj: Range[Any]) -> Buffer:
+    def dump(self, obj: Range[Any]) -> Optional[Buffer]:
         item = self._get_item(obj)
         if item is not None:
             dump = self._tx.get_dumper(item, self._adapt_format).dump
@@ -361,7 +361,7 @@ class RangeBinaryDumper(BaseRangeDumper):
 
     format = Format.BINARY
 
-    def dump(self, obj: Range[Any]) -> Buffer:
+    def dump(self, obj: Range[Any]) -> Optional[Buffer]:
         item = self._get_item(obj)
         if item is not None:
             dump = self._tx.get_dumper(item, self._adapt_format).dump

@@ -41,7 +41,7 @@ class DateDumper(Dumper):
 
     oid = postgres.types["date"].oid
 
-    def dump(self, obj: date) -> bytes:
+    def dump(self, obj: date) -> Optional[Buffer]:
         # NOTE: whatever the PostgreSQL DateStyle input format (DMY, MDY, YMD)
         # the YYYY-MM-DD is always understood correctly.
         return str(obj).encode()
@@ -52,7 +52,7 @@ class DateBinaryDumper(Dumper):
     format = Format.BINARY
     oid = postgres.types["date"].oid
 
-    def dump(self, obj: date) -> bytes:
+    def dump(self, obj: date) -> Optional[Buffer]:
         days = obj.toordinal() - _pg_date_epoch_days
         return pack_int4(days)
 
@@ -71,7 +71,7 @@ class _BaseTimeDumper(Dumper):
 
 
 class _BaseTimeTextDumper(_BaseTimeDumper):
-    def dump(self, obj: time) -> bytes:
+    def dump(self, obj: time) -> Optional[Buffer]:
         return str(obj).encode()
 
 
@@ -96,7 +96,7 @@ class TimeBinaryDumper(_BaseTimeDumper):
     format = Format.BINARY
     oid = postgres.types["time"].oid
 
-    def dump(self, obj: time) -> bytes:
+    def dump(self, obj: time) -> Optional[Buffer]:
         us = obj.microsecond + 1_000_000 * (
             obj.second + 60 * (obj.minute + 60 * obj.hour)
         )
@@ -114,7 +114,7 @@ class TimeTzBinaryDumper(_BaseTimeDumper):
     format = Format.BINARY
     oid = postgres.types["timetz"].oid
 
-    def dump(self, obj: time) -> bytes:
+    def dump(self, obj: time) -> Optional[Buffer]:
         us = obj.microsecond + 1_000_000 * (
             obj.second + 60 * (obj.minute + 60 * obj.hour)
         )
@@ -137,7 +137,7 @@ class _BaseDatetimeDumper(Dumper):
 
 
 class _BaseDatetimeTextDumper(_BaseDatetimeDumper):
-    def dump(self, obj: datetime) -> bytes:
+    def dump(self, obj: datetime) -> Optional[Buffer]:
         # NOTE: whatever the PostgreSQL DateStyle input format (DMY, MDY, YMD)
         # the YYYY-MM-DD is always understood correctly.
         return str(obj).encode()
@@ -164,7 +164,7 @@ class DatetimeBinaryDumper(_BaseDatetimeDumper):
     format = Format.BINARY
     oid = postgres.types["timestamptz"].oid
 
-    def dump(self, obj: datetime) -> bytes:
+    def dump(self, obj: datetime) -> Optional[Buffer]:
         delta = obj - _pg_datetimetz_epoch
         micros = delta.microseconds + 1_000_000 * (86_400 * delta.days + delta.seconds)
         return pack_int8(micros)
@@ -181,7 +181,7 @@ class DatetimeNoTzBinaryDumper(_BaseDatetimeDumper):
     format = Format.BINARY
     oid = postgres.types["timestamp"].oid
 
-    def dump(self, obj: datetime) -> bytes:
+    def dump(self, obj: datetime) -> Optional[Buffer]:
         delta = obj - _pg_datetime_epoch
         micros = delta.microseconds + 1_000_000 * (86_400 * delta.days + delta.seconds)
         return pack_int8(micros)
@@ -200,7 +200,7 @@ class TimedeltaDumper(Dumper):
             ):
                 setattr(self, "dump", self._dump_sql)
 
-    def dump(self, obj: timedelta) -> bytes:
+    def dump(self, obj: timedelta) -> Optional[Buffer]:
         # The comma is parsed ok by PostgreSQL but it's not documented
         # and it seems brittle to rely on it. CRDB doesn't consume it well.
         return str(obj).encode().replace(b",", b"")
@@ -220,7 +220,7 @@ class TimedeltaBinaryDumper(Dumper):
     format = Format.BINARY
     oid = postgres.types["interval"].oid
 
-    def dump(self, obj: timedelta) -> bytes:
+    def dump(self, obj: timedelta) -> Optional[Buffer]:
         micros = 1_000_000 * obj.seconds + obj.microseconds
         return _pack_interval(micros, obj.days, 0)
 

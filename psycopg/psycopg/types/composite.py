@@ -63,7 +63,7 @@ class TupleDumper(SequenceDumper):
     # Should be this, but it doesn't work
     # oid = postgres_types["record"].oid
 
-    def dump(self, obj: Tuple[Any, ...]) -> bytes:
+    def dump(self, obj: Tuple[Any, ...]) -> Optional[Buffer]:
         return self._dump_sequence(obj, b"(", b")", b",")
 
 
@@ -80,7 +80,7 @@ class TupleBinaryDumper(RecursiveDumper):
         self._tx.set_dumper_types(self.info.field_types, self.format)
         self._formats = (PyFormat.from_pq(self.format),) * nfields
 
-    def dump(self, obj: Tuple[Any, ...]) -> bytearray:
+    def dump(self, obj: Tuple[Any, ...]) -> Optional[Buffer]:
         out = bytearray(pack_len(len(obj)))
         adapted = self._tx.dump_sequence(obj, self._formats)
         for i in range(len(obj)):

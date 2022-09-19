@@ -4,6 +4,8 @@ Adapters for booleans.
 
 # Copyright (C) 2020 The Psycopg Team
 
+from typing import Optional
+
 from .. import postgres
 from ..pq import Format
 from ..abc import AdaptContext
@@ -14,10 +16,10 @@ class BoolDumper(Dumper):
 
     oid = postgres.types["bool"].oid
 
-    def dump(self, obj: bool) -> bytes:
+    def dump(self, obj: bool) -> Optional[Buffer]:
         return b"t" if obj else b"f"
 
-    def quote(self, obj: bool) -> bytes:
+    def quote(self, obj: bool) -> Buffer:
         return b"true" if obj else b"false"
 
 
@@ -26,7 +28,7 @@ class BoolBinaryDumper(Dumper):
     format = Format.BINARY
     oid = postgres.types["bool"].oid
 
-    def dump(self, obj: bool) -> bytes:
+    def dump(self, obj: bool) -> Optional[Buffer]:
         return b"\x01" if obj else b"\x00"
 
 

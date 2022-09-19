@@ -22,7 +22,7 @@ class UUIDDumper(Dumper):
 
     oid = postgres.types["uuid"].oid
 
-    def dump(self, obj: "uuid.UUID") -> bytes:
+    def dump(self, obj: "uuid.UUID") -> Optional[Buffer]:
         return obj.hex.encode()
 
 
@@ -30,7 +30,7 @@ class UUIDBinaryDumper(UUIDDumper):
 
     format = Format.BINARY
 
-    def dump(self, obj: "uuid.UUID") -> bytes:
+    def dump(self, obj: "uuid.UUID") -> Optional[Buffer]:
         return obj.bytes
 
 

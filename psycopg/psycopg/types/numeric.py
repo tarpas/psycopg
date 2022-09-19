@@ -6,7 +6,7 @@ Adapers for numeric types.
 
 import struct
 from math import log
-from typing import Any, Callable, DefaultDict, Dict, Tuple, Union, cast
+from typing import Any, Callable, DefaultDict, Dict, Optional, Tuple, Union, cast
 from decimal import Decimal, DefaultContext, Context
 
 from .. import postgres
@@ -32,7 +32,7 @@ from .._wrappers import (
 
 
 class _IntDumper(Dumper):
-    def dump(self, obj: Any) -> Buffer:
+    def dump(self, obj: Any) -> Optional[Buffer]:
         t = type(obj)
         if t is not int:
             # Convert to int in order to dump IntEnum correctly
@@ -45,6 +45,8 @@ class _IntDumper(Dumper):
 
     def quote(self, obj: Any) -> Buffer:
         value = self.dump(obj)
+        if value is None:
+            return b"NULL"
         return value if obj >= 0 else b" " + value
 
 
@@ -52,12 +54,16 @@ class _SpecialValuesDumper(Dumper):
 
     _special: Dict[bytes, bytes] = {}
 
-    def dump(self, obj: Any) -> bytes:
+    def dump(self, obj: Any) -> Optional[Buffer]:
         return str(obj).encode()
 
-    def quote(self, obj: Any) -> bytes:
+    def quote(self, obj: Any) -> Buffer:
         value = self.dump(obj)
 
+        if value is None:
+            return b"NULL"
+        if not isinstance(value, bytes):
+            value = bytes(value)
         if value in self._special:
             return self._special[value]
 
@@ -84,7 +90,7 @@ class FloatBinaryDumper(Dumper):
     format = Format.BINARY
     oid = postgres.types["float8"].oid
 
-    def dump(self, obj: float) -> bytes:
+    def dump(self, obj: float) -> Optional[Buffer]:
         return pack_float8(obj)
 
 
@@ -92,7 +98,7 @@ class Float4BinaryDumper(FloatBinaryDumper):
 
     oid = postgres.types["float4"].oid
 
-    def dump(self, obj: float) -> bytes:
+    def dump(self, obj: float) -> Optional[Buffer]:
         return pack_float4(obj)
 
 
@@ -100,7 +106,7 @@ class DecimalDumper(_SpecialValuesDumper):
 
     oid = postgres.types["numeric"].oid
 
-    def dump(self, obj: Decimal) -> bytes:
+    def dump(self, obj: Decimal) -> Optional[Buffer]:
         if obj.is_nan():
             # cover NaN and sNaN
             return b"NaN"
@@ -135,7 +141,7 @@ class OidDumper(_IntDumper):
 
 
 class IntDumper(Dumper):
-    def dump(self, obj: Any) -> bytes:
+    def dump(self, obj: Any) -> Optional[Buffer]:
         raise TypeError(
             f"{type(self).__name__} is a dispatcher to other dumpers:"
             " dump() is not supposed to be called"
@@ -166,7 +172,7 @@ class Int2BinaryDumper(Int2Dumper):
 
     format = Format.BINARY
 
-    def dump(self, obj: int) -> bytes:
+    def dump(self, obj: int) -> Optional[Buffer]:
         return pack_int2(obj)
 
 
@@ -174,7 +180,7 @@ class Int4BinaryDumper(Int4Dumper):
 
     format = Format.BINARY
 
-    def dump(self, obj: int) -> bytes:
+    def dump(self, obj: int) -> Optional[Buffer]:
         return pack_int4(obj)
 
 
@@ -182,7 +188,7 @@ class Int8BinaryDumper(Int8Dumper):
 
     format = Format.BINARY
 
-    def dump(self, obj: int) -> bytes:
+    def dump(self, obj: int) -> Optional[Buffer]:
         return pack_int8(obj)
 
 
@@ -195,7 +201,7 @@ class IntNumericBinaryDumper(IntNumericDumper):
 
     format = Format.BINARY
 
-    def dump(self, obj: int) -> Buffer:
+    def dump(self, obj: int) -> Optional[Buffer]:
         return dump_int_to_numeric_binary(obj)
 
 
@@ -203,7 +209,7 @@ class OidBinaryDumper(OidDumper):
 
     format = Format.BINARY
 
-    def dump(self, obj: int) -> bytes:
+    def dump(self, obj: int) -> Optional[Buffer]:
         return pack_uint4(obj)
 
 
@@ -365,12 +371,12 @@ class DecimalBinaryDumper(Dumper):
     format = Format.BINARY
     oid = postgres.types["numeric"].oid
 
-    def dump(self, obj: Decimal) -> Buffer:
+    def dump(self, obj: Decimal) -> Optional[Buffer]:
         return dump_decimal_to_numeric_binary(obj)
 
 
 class NumericDumper(DecimalDumper):
-    def dump(self, obj: Union[Decimal, int]) -> bytes:
+    def dump(self, obj: Union[Decimal, int]) -> Optional[Buffer]:
         if isinstance(obj, int):
             return str(obj).encode()
         else:
@@ -382,7 +388,7 @@ class NumericBinaryDumper(Dumper):
     format = Format.BINARY
     oid = postgres.types["numeric"].oid
 
-    def dump(self, obj: Union[Decimal, int]) -> Buffer:
+    def dump(self, obj: Union[Decimal, int]) -> Optional[Buffer]:
         if isinstance(obj, int):
             return dump_int_to_numeric_binary(obj)
         else:

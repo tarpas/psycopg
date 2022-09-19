@@ -127,7 +127,7 @@ class _JsonDumper(Dumper):
         super().__init__(cls, context)
         self.dumps = self.__class__._dumps
 
-    def dump(self, obj: _JsonWrapper) -> bytes:
+    def dump(self, obj: _JsonWrapper) -> Optional[Buffer]:
         dumps = obj.dumps or self.dumps
         return dumps(obj.obj).encode()
 
@@ -153,7 +153,7 @@ class JsonbBinaryDumper(_JsonDumper):
     format = Format.BINARY
     oid = postgres.types["jsonb"].oid
 
-    def dump(self, obj: _JsonWrapper) -> bytes:
+    def dump(self, obj: _JsonWrapper) -> Optional[Buffer]:
         dumps = obj.dumps or self.dumps
         return b"\x01" + dumps(obj.obj).encode()
 
