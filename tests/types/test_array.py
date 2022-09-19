@@ -11,6 +11,8 @@ from psycopg.types import TypeInfo
 from psycopg._compat import prod
 from psycopg.postgres import types as builtins
 
+from ..test_adapt import StrNoneDumper, StrNoneBinaryDumper
+
 
 tests_str = [
     ([[[[[["a"]]]]]], "{{{{{{a}}}}}}"),
@@ -45,6 +47,16 @@ def test_dump_list_str(conn, obj, want, fmt_in):
     cur = conn.cursor()
     cur.execute(f"select %{fmt_in.value}::text[] = %s::text[]", (obj, want))
     assert cur.fetchone()[0]
+
+
+@pytest.mark.parametrize("fmt_in", PyFormat)
+def test_dump_list_str_none(conn, fmt_in):
+    cur = conn.cursor()
+    cur.adapters.register_dumper(str, StrNoneDumper)
+    cur.adapters.register_dumper(str, StrNoneBinaryDumper)
+
+    cur.execute(f"select %{fmt_in.value}::text[]", (["foo", "", "bar"],))
+    assert cur.fetchone()[0] == ["foo", None, "bar"]
 
 
 @pytest.mark.parametrize("fmt_out", pq.Format)
