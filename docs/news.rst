@@ -14,6 +14,8 @@ Psycopg 3.0.19 (unreleased)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 - Fix segfault occurring when a loader fails initialization (:ticket:`#372`).
+- Restore the state of the connection if `Cursor.stream()` is terminated
+  prematurely (:ticket:`#382`).
 
 
 Current release
