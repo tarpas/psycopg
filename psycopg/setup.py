@@ -37,7 +37,7 @@ extras_require = {
     ],
     # Requirements to run the test suite
     "test": [
-        "mypy >= 0.920, != 0.930, != 0.931",
+        "mypy >= 0.920, != 0.930, != 0.931, < 0.981",
         "pproxy >= 2.7",
         "pytest >= 6.2.5",
         # 0.16 is still needed to support Python 3.6.
@@ -53,7 +53,7 @@ extras_require = {
         "black >= 22.3.0",
         "dnspython >= 2.1",
         "flake8 >= 4.0",
-        "mypy >= 0.920, != 0.930, != 0.931",
+        "mypy >= 0.920, != 0.930, != 0.931, < 0.981",
         "types-setuptools >= 57.4",
         "wheel >= 0.37",
     ],
