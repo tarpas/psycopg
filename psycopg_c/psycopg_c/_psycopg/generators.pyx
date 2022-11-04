@@ -235,7 +235,6 @@ def pipeline_communicate(
                     r = pq.PGresult._from_ptr(pgres)
                     if status == libpq.PGRES_PIPELINE_SYNC:
                         results.append([r])
-                        break
                     else:
                         res.append(r)
 
