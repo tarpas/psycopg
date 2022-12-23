@@ -38,6 +38,45 @@ def test_concurrent_execution(conn_cls, dsn):
 
 
 @pytest.mark.slow
+@pytest.mark.timing
+def test_gil_released(conn_cls, dsn):
+    conns = []
+    try:
+        for i in range(5):
+            conns.append(conn_cls.connect(dsn))
+
+        for conn in conns:
+            conn.execute(
+                "create temp table test_gil (id serial primary key, data text)",
+            )
+
+        ops = 5000
+
+        def worker(conn):
+            cur = conn.cursor()
+            for i in range(ops):
+                cur.execute("insert into test_gil default values")
+
+        t0 = time.time()
+        worker(conns[0])
+        dt1 = time.time() - t0
+
+        ts = [threading.Thread(target=worker, args=(conn,)) for conn in conns[1:]]
+        t0 = time.time()
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        dt4 = time.time() - t0
+
+        assert dt4 < dt1 * 2, "too much time for parallel run"
+
+    finally:
+        for conn in conns:
+            conn.close()
+
+
+@pytest.mark.slow
 def test_commit_concurrency(conn):
     # Check the condition reported in psycopg2#103
     # Because of bad status check, we commit even when a commit is already on

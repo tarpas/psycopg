@@ -61,6 +61,42 @@ async def test_concurrent_execution(aconn_cls, dsn):
 
 @pytest.mark.slow
 @pytest.mark.timing
+async def test_gil_released(aconn_cls, dsn):
+    conns = []
+    try:
+        for i in range(5):
+            conns.append(await aconn_cls.connect(dsn))
+
+        for conn in conns:
+            await conn.execute(
+                "create temp table test_gil (id serial primary key, data text)",
+            )
+
+        ops = 5000
+
+        async def worker(conn):
+            cur = conn.cursor()
+            for i in range(ops):
+                await cur.execute("insert into test_gil default values")
+
+        t0 = time.time()
+        await worker(conns[0])
+        dt1 = time.time() - t0
+
+        t0 = time.time()
+        ts = [create_task(worker(conn)) for conn in conns[1:]]
+        await asyncio.gather(*ts)
+        dt4 = time.time() - t0
+
+        assert dt4 < dt1 * 2, "too much time for parallel run"
+
+    finally:
+        for conn in conns:
+            await conn.close()
+
+
+@pytest.mark.slow
+@pytest.mark.timing
 @pytest.mark.crdb_skip("notify")
 async def test_notifies(aconn_cls, aconn, dsn):
     nconn = await aconn_cls.connect(dsn, autocommit=True)
