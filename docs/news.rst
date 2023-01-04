@@ -7,6 +7,15 @@
 ``psycopg`` release notes
 =========================
 
+Future releases
+---------------
+
+Psycopg 3.2.0
+^^^^^^^^^^^^^
+
+- Allow dumpers to return `!None`, to be converted to NULL (:ticket:`#377`).
+
+
 Current release
 ---------------
 
