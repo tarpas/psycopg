@@ -97,7 +97,6 @@ jobs:
       - name: Install Python packages
         run: pip install --editable $DEPS --config-settings editable-mode=strict
 
-      # Testmon (NOTE: fbc3a9498024bc925be7deec7960563440348dbd is pytest-testmon that will be installed)
       - name: Install pytest-testmon (commit-based)
         run: pip install pytest-testmon==1.4.5
 
