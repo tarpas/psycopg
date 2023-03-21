@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
 
-  linux1:  # {{{
+  linux:  # {{{
     runs-on: ubuntu-latest
     if: true
 
@@ -27,7 +27,9 @@ jobs:
 #          - {impl: python, python: "3.7", postgres: "postgres:10", libpq: newest}
 #          - {impl: python, python: "3.8", postgres: "postgres:12"}
 #          - {impl: python, python: "3.9", postgres: "postgres:13"}
-          - {impl: python, python: "3.10", postgres: "postgres:14"}
+          - {arg: "--testmon"}
+          - {arg: "--cov"}
+          - {arg: ""}
 #          - {impl: python, python: "3.11", postgres: "postgres:15", libpq: oldest}
 #
 #          - {impl: c, python: "3.7", postgres: "postgres:15", libpq: newest}
@@ -43,7 +45,7 @@ jobs:
 #          - {impl: c, python: "3.7", ext: min, postgres: "postgres:15"}
 
     env:
-      PSYCOPG_IMPL: ${{ matrix.impl }}
+      PSYCOPG_IMPL: python
       DEPS: ./psycopg[test] ./psycopg_pool
       PSYCOPG_TEST_DSN: "host=127.0.0.1 user=postgres password=password"
       MARKERS: ""
@@ -53,24 +55,19 @@ jobs:
 
       - uses: actions/setup-python@v4
         with:
-          python-version: ${{ matrix.python }}
+          python-version: 3.10
 
       - name: Start PostgreSQL service
         # Note: this would love to be a service, but I don't see a way to pass
         # the args to the docker run command line.
         run: |
-          docker pull ${{ matrix.postgres }}
+          docker pull postgres:14
           docker run --rm -d --name postgres -p 5432:5432 \
             -e POSTGRES_PASSWORD=password ${{ matrix.postgres }} \
             -c max_prepared_transactions=10
 
       - name: Install the wanted libpq version
         run: sudo ./tools/build/ci_install_libpq.sh ${{ matrix.libpq }}
-
-      - name: Include psycopg-c to the packages to install
-        if: ${{ matrix.impl == 'c' }}
-        run: |
-          echo "DEPS=$DEPS ./psycopg_c" >> $GITHUB_ENV
 
       - name: Include dnspython to the packages to install
         if: ${{ matrix.ext == 'dns' }}
@@ -99,179 +96,8 @@ jobs:
         run: pip install pytest-testmon==2.0.0b2
 
       - name: Run tests
-        run: ./tools/build/ci_test.sh --testmon
+        run: ./tools/build/ci_test.sh ${{ matrix.arg }}
 
-  linux2:  # {{{
-    runs-on: ubuntu-latest
-    if: true
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Test different combinations of Python, Postgres, libpq.
-#          - {impl: python, python: "3.7", postgres: "postgres:10", libpq: newest}
-#          - {impl: python, python: "3.8", postgres: "postgres:12"}
-#          - {impl: python, python: "3.9", postgres: "postgres:13"}
-          - {impl: python, python: "3.10", postgres: "postgres:14"}
-#          - {impl: python, python: "3.11", postgres: "postgres:15", libpq: oldest}
-#
-#          - {impl: c, python: "3.7", postgres: "postgres:15", libpq: newest}
-#          - {impl: c, python: "3.8", postgres: "postgres:13"}
-#          - {impl: c, python: "3.9", postgres: "postgres:14"}
-#          - {impl: c, python: "3.10", postgres: "postgres:11", libpq: oldest}
-#          - {impl: c, python: "3.11", postgres: "postgres:10", libpq: newest}
-#
-#          - {impl: python, python: "3.9", ext: dns, postgres: "postgres:14"}
-#          - {impl: python, python: "3.9", ext: postgis, postgres: "postgis/postgis"}
-#
-#          # Test with minimum dependencies versions
-#          - {impl: c, python: "3.7", ext: min, postgres: "postgres:15"}
-
-    env:
-      PSYCOPG_IMPL: ${{ matrix.impl }}
-      DEPS: ./psycopg[test] ./psycopg_pool
-      PSYCOPG_TEST_DSN: "host=127.0.0.1 user=postgres password=password"
-      MARKERS: ""
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Start PostgreSQL service
-        # Note: this would love to be a service, but I don't see a way to pass
-        # the args to the docker run command line.
-        run: |
-          docker pull ${{ matrix.postgres }}
-          docker run --rm -d --name postgres -p 5432:5432 \
-            -e POSTGRES_PASSWORD=password ${{ matrix.postgres }} \
-            -c max_prepared_transactions=10
-
-      - name: Install the wanted libpq version
-        run: sudo ./tools/build/ci_install_libpq.sh ${{ matrix.libpq }}
-
-      - name: Include psycopg-c to the packages to install
-        if: ${{ matrix.impl == 'c' }}
-        run: |
-          echo "DEPS=$DEPS ./psycopg_c" >> $GITHUB_ENV
-
-      - name: Include dnspython to the packages to install
-        if: ${{ matrix.ext == 'dns' }}
-        run: |
-          echo "DEPS=$DEPS dnspython" >> $GITHUB_ENV
-          echo "MARKERS=$MARKERS dns" >> $GITHUB_ENV
-
-      - name: Include shapely to the packages to install
-        if: ${{ matrix.ext == 'postgis' }}
-        run: |
-          echo "DEPS=$DEPS shapely" >> $GITHUB_ENV
-          echo "MARKERS=$MARKERS postgis" >> $GITHUB_ENV
-
-      - name: Configure to use the oldest dependencies
-        if: ${{ matrix.ext == 'min' }}
-        run: |
-          echo "DEPS=$DEPS dnspython shapely" >> $GITHUB_ENV
-          echo "PIP_CONSTRAINT=${{ github.workspace }}/tests/constraints.txt" \
-            >> $GITHUB_ENV
-
-      # Update original pip install with --editable ... --config-settings editable-mode=strict
-      - name: Install Python packages
-        run: pip install --editable $DEPS --config-settings editable-mode=strict
-
-      - name: Install pytest-testmon (commit-based)
-        run: pip install pytest-testmon==2.0.0b2
-
-      - name: Run tests
-        run: ./tools/build/ci_test.sh --cov
-
-  linux3:  # {{{
-    runs-on: ubuntu-latest
-    if: true
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Test different combinations of Python, Postgres, libpq.
-#          - {impl: python, python: "3.7", postgres: "postgres:10", libpq: newest}
-#          - {impl: python, python: "3.8", postgres: "postgres:12"}
-#          - {impl: python, python: "3.9", postgres: "postgres:13"}
-          - {impl: python, python: "3.10", postgres: "postgres:14"}
-#          - {impl: python, python: "3.11", postgres: "postgres:15", libpq: oldest}
-#
-#          - {impl: c, python: "3.7", postgres: "postgres:15", libpq: newest}
-#          - {impl: c, python: "3.8", postgres: "postgres:13"}
-#          - {impl: c, python: "3.9", postgres: "postgres:14"}
-#          - {impl: c, python: "3.10", postgres: "postgres:11", libpq: oldest}
-#          - {impl: c, python: "3.11", postgres: "postgres:10", libpq: newest}
-#
-#          - {impl: python, python: "3.9", ext: dns, postgres: "postgres:14"}
-#          - {impl: python, python: "3.9", ext: postgis, postgres: "postgis/postgis"}
-#
-#          # Test with minimum dependencies versions
-#          - {impl: c, python: "3.7", ext: min, postgres: "postgres:15"}
-
-    env:
-      PSYCOPG_IMPL: ${{ matrix.impl }}
-      DEPS: ./psycopg[test] ./psycopg_pool
-      PSYCOPG_TEST_DSN: "host=127.0.0.1 user=postgres password=password"
-      MARKERS: ""
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Start PostgreSQL service
-        # Note: this would love to be a service, but I don't see a way to pass
-        # the args to the docker run command line.
-        run: |
-          docker pull ${{ matrix.postgres }}
-          docker run --rm -d --name postgres -p 5432:5432 \
-            -e POSTGRES_PASSWORD=password ${{ matrix.postgres }} \
-            -c max_prepared_transactions=10
-
-      - name: Install the wanted libpq version
-        run: sudo ./tools/build/ci_install_libpq.sh ${{ matrix.libpq }}
-
-      - name: Include psycopg-c to the packages to install
-        if: ${{ matrix.impl == 'c' }}
-        run: |
-          echo "DEPS=$DEPS ./psycopg_c" >> $GITHUB_ENV
-
-      - name: Include dnspython to the packages to install
-        if: ${{ matrix.ext == 'dns' }}
-        run: |
-          echo "DEPS=$DEPS dnspython" >> $GITHUB_ENV
-          echo "MARKERS=$MARKERS dns" >> $GITHUB_ENV
-
-      - name: Include shapely to the packages to install
-        if: ${{ matrix.ext == 'postgis' }}
-        run: |
-          echo "DEPS=$DEPS shapely" >> $GITHUB_ENV
-          echo "MARKERS=$MARKERS postgis" >> $GITHUB_ENV
-
-      - name: Configure to use the oldest dependencies
-        if: ${{ matrix.ext == 'min' }}
-        run: |
-          echo "DEPS=$DEPS dnspython shapely" >> $GITHUB_ENV
-          echo "PIP_CONSTRAINT=${{ github.workspace }}/tests/constraints.txt" \
-            >> $GITHUB_ENV
-
-      # Update original pip install with --editable ... --config-settings editable-mode=strict
-      - name: Install Python packages
-        run: pip install --editable $DEPS --config-settings editable-mode=strict
-
-      - name: Install pytest-testmon (commit-based)
-        run: pip install pytest-testmon==2.0.0b2
-
-      - name: Run tests
-        run: ./tools/build/ci_test.sh
 
   # }}}
 
