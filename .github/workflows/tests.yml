@@ -7,8 +7,6 @@ on:
     branches:
       - "*"
   pull_request:
-  schedule:
-    - cron: '48 6 * * *'
 
 concurrency:
   # Cancel older requests of the same workflow in the same branch.
