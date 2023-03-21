@@ -96,7 +96,7 @@ jobs:
         run: pip install --editable $DEPS --config-settings editable-mode=strict
 
       - name: Install pytest-testmon (commit-based)
-        run: pip install pytest-testmon==1.4.5
+        run: pip install pytest-testmon==2.0.0b2
 
       - name: Run tests
         run: ./tools/build/ci_test.sh
