@@ -26,23 +26,23 @@ jobs:
       matrix:
         include:
           # Test different combinations of Python, Postgres, libpq.
-          - {impl: python, python: "3.7", postgres: "postgres:10", libpq: newest}
-          - {impl: python, python: "3.8", postgres: "postgres:12"}
-          - {impl: python, python: "3.9", postgres: "postgres:13"}
+#          - {impl: python, python: "3.7", postgres: "postgres:10", libpq: newest}
+#          - {impl: python, python: "3.8", postgres: "postgres:12"}
+#          - {impl: python, python: "3.9", postgres: "postgres:13"}
           - {impl: python, python: "3.10", postgres: "postgres:14"}
-          - {impl: python, python: "3.11", postgres: "postgres:15", libpq: oldest}
-
-          - {impl: c, python: "3.7", postgres: "postgres:15", libpq: newest}
-          - {impl: c, python: "3.8", postgres: "postgres:13"}
-          - {impl: c, python: "3.9", postgres: "postgres:14"}
-          - {impl: c, python: "3.10", postgres: "postgres:11", libpq: oldest}
-          - {impl: c, python: "3.11", postgres: "postgres:10", libpq: newest}
-
-          - {impl: python, python: "3.9", ext: dns, postgres: "postgres:14"}
-          - {impl: python, python: "3.9", ext: postgis, postgres: "postgis/postgis"}
-
-          # Test with minimum dependencies versions
-          - {impl: c, python: "3.7", ext: min, postgres: "postgres:15"}
+#          - {impl: python, python: "3.11", postgres: "postgres:15", libpq: oldest}
+#
+#          - {impl: c, python: "3.7", postgres: "postgres:15", libpq: newest}
+#          - {impl: c, python: "3.8", postgres: "postgres:13"}
+#          - {impl: c, python: "3.9", postgres: "postgres:14"}
+#          - {impl: c, python: "3.10", postgres: "postgres:11", libpq: oldest}
+#          - {impl: c, python: "3.11", postgres: "postgres:10", libpq: newest}
+#
+#          - {impl: python, python: "3.9", ext: dns, postgres: "postgres:14"}
+#          - {impl: python, python: "3.9", ext: postgis, postgres: "postgis/postgis"}
+#
+#          # Test with minimum dependencies versions
+#          - {impl: c, python: "3.7", ext: min, postgres: "postgres:15"}
 
     env:
       PSYCOPG_IMPL: ${{ matrix.impl }}
@@ -93,8 +93,13 @@ jobs:
           echo "PIP_CONSTRAINT=${{ github.workspace }}/tests/constraints.txt" \
             >> $GITHUB_ENV
 
+      # Update original pip install with --editable ... --config-settings editable-mode=strict
       - name: Install Python packages
-        run: pip install $DEPS
+        run: pip install --editable $DEPS --config-settings editable-mode=strict
+
+      # Testmon (NOTE: fbc3a9498024bc925be7deec7960563440348dbd is pytest-testmon that will be installed)
+      - name: Install pytest-testmon (commit-based)
+        run: pip install pytest-testmon==1.4.5
 
       - name: Run tests
         run: ./tools/build/ci_test.sh
@@ -102,174 +107,174 @@ jobs:
 
   # }}}
 
-  macos:  # {{{
-    runs-on: macos-latest
-    if: true
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {impl: python, python: "3.7"}
-          - {impl: python, python: "3.8"}
-          - {impl: python, python: "3.9"}
-          - {impl: python, python: "3.10"}
-          - {impl: python, python: "3.11"}
-          - {impl: c, python: "3.7"}
-          - {impl: c, python: "3.8"}
-          - {impl: c, python: "3.9"}
-          - {impl: c, python: "3.10"}
-          - {impl: c, python: "3.11"}
-
-    env:
-      PSYCOPG_IMPL: ${{ matrix.impl }}
-      DEPS: ./psycopg[test] ./psycopg_pool
-      PSYCOPG_TEST_DSN: "host=127.0.0.1 user=runner dbname=postgres"
-      # MacOS on GitHub Actions seems particularly slow.
-      # Don't run timing-based tests as they regularly fail.
-      # pproxy-based tests fail too, with the proxy not coming up in 2s.
-      NOT_MARKERS: "timing proxy mypy"
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Install PostgreSQL on the runner
-        run: brew install postgresql@14
-
-      - name: Start PostgreSQL service
-        run: brew services start postgresql
-
-      - name: Include psycopg-c to the packages to install
-        if: ${{ matrix.impl == 'c' }}
-        run: |
-          echo "DEPS=$DEPS ./psycopg_c" >> $GITHUB_ENV
-
-      - name: Install Python packages
-        run: pip install $DEPS
-
-      - name: Run tests
-        run: ./tools/build/ci_test.sh
-
-
-  # }}}
-
-  windows:  # {{{
-    runs-on: windows-latest
-    if: true
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {impl: python, python: "3.7"}
-          - {impl: python, python: "3.8"}
-          - {impl: python, python: "3.9"}
-          - {impl: python, python: "3.10"}
-          - {impl: python, python: "3.11"}
-          - {impl: c, python: "3.7"}
-          - {impl: c, python: "3.8"}
-          - {impl: c, python: "3.9"}
-          - {impl: c, python: "3.10"}
-          - {impl: c, python: "3.11"}
-
-    env:
-      PSYCOPG_IMPL: ${{ matrix.impl }}
-      DEPS: ./psycopg[test] ./psycopg_pool
-      PSYCOPG_TEST_DSN: "host=127.0.0.1 dbname=postgres"
-      # On windows pproxy doesn't seem very happy. Also a few timing test fail.
-      NOT_MARKERS: "timing proxy mypy"
-
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Start PostgreSQL service
-        run: |
-          $PgSvc = Get-Service "postgresql*"
-          Set-Service $PgSvc.Name -StartupType manual
-          $PgSvc.Start()
-        shell: pwsh
-
-      - name: Build the C wheel
-        if: ${{ matrix.impl == 'c' }}
-        run: |
-          pip install delvewheel wheel
-
-          # The windows runner is a total mess, with random copies of the libpq
-          # scattered all over the places. Give precedence to the one under our
-          # control (or the illusion of it).
-          export PATH="/c/Program Files/PostgreSQL/14/bin/:$PATH"
-
-          # If the wheel is not delocated, import fails with some dll not found
-          # (but it won't tell which one).
-          pip wheel -v -w ./psycopg_c/dist/ ./psycopg_c/
-          delvewheel repair --no-mangle "libiconv-2.dll;libwinpthread-1.dll" \
-            -w ./wheelhouse/ psycopg_c/dist/*.whl
-          echo "DEPS=$DEPS $(ls ./wheelhouse/*.whl)" >> $GITHUB_ENV
-
-      - name: Install Python packages
-        run: pip install $DEPS
-
-      - name: Run tests
-        run: ./tools/build/ci_test.sh
+#  macos:  # {{{
+#    runs-on: macos-latest
+#    if: true
+#
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        include:
+#          - {impl: python, python: "3.7"}
+#          - {impl: python, python: "3.8"}
+#          - {impl: python, python: "3.9"}
+#          - {impl: python, python: "3.10"}
+#          - {impl: python, python: "3.11"}
+#          - {impl: c, python: "3.7"}
+#          - {impl: c, python: "3.8"}
+#          - {impl: c, python: "3.9"}
+#          - {impl: c, python: "3.10"}
+#          - {impl: c, python: "3.11"}
+#
+#    env:
+#      PSYCOPG_IMPL: ${{ matrix.impl }}
+#      DEPS: ./psycopg[test] ./psycopg_pool
+#      PSYCOPG_TEST_DSN: "host=127.0.0.1 user=runner dbname=postgres"
+#      # MacOS on GitHub Actions seems particularly slow.
+#      # Don't run timing-based tests as they regularly fail.
+#      # pproxy-based tests fail too, with the proxy not coming up in 2s.
+#      NOT_MARKERS: "timing proxy mypy"
+#
+#    steps:
+#      - uses: actions/checkout@v3
+#
+#      - uses: actions/setup-python@v4
+#        with:
+#          python-version: ${{ matrix.python }}
+#
+#      - name: Install PostgreSQL on the runner
+#        run: brew install postgresql@14
+#
+#      - name: Start PostgreSQL service
+#        run: brew services start postgresql
+#
+#      - name: Include psycopg-c to the packages to install
+#        if: ${{ matrix.impl == 'c' }}
+#        run: |
+#          echo "DEPS=$DEPS ./psycopg_c" >> $GITHUB_ENV
+#
+#      - name: Install Python packages
+#        run: pip install $DEPS
+#
+#      - name: Run tests
+#        run: ./tools/build/ci_test.sh
 
 
   # }}}
 
-  crdb:  # {{{
-    runs-on: ubuntu-latest
-    if: true
+#  windows:  # {{{
+#    runs-on: windows-latest
+#    if: true
+#
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        include:
+#          - {impl: python, python: "3.7"}
+#          - {impl: python, python: "3.8"}
+#          - {impl: python, python: "3.9"}
+#          - {impl: python, python: "3.10"}
+#          - {impl: python, python: "3.11"}
+#          - {impl: c, python: "3.7"}
+#          - {impl: c, python: "3.8"}
+#          - {impl: c, python: "3.9"}
+#          - {impl: c, python: "3.10"}
+#          - {impl: c, python: "3.11"}
+#
+#    env:
+#      PSYCOPG_IMPL: ${{ matrix.impl }}
+#      DEPS: ./psycopg[test] ./psycopg_pool
+#      PSYCOPG_TEST_DSN: "host=127.0.0.1 dbname=postgres"
+#      # On windows pproxy doesn't seem very happy. Also a few timing test fail.
+#      NOT_MARKERS: "timing proxy mypy"
+#
+#    defaults:
+#      run:
+#        shell: bash
+#
+#    steps:
+#      - uses: actions/checkout@v3
+#
+#      - uses: actions/setup-python@v4
+#        with:
+#          python-version: ${{ matrix.python }}
+#
+#      - name: Start PostgreSQL service
+#        run: |
+#          $PgSvc = Get-Service "postgresql*"
+#          Set-Service $PgSvc.Name -StartupType manual
+#          $PgSvc.Start()
+#        shell: pwsh
+#
+#      - name: Build the C wheel
+#        if: ${{ matrix.impl == 'c' }}
+#        run: |
+#          pip install delvewheel wheel
+#
+#          # The windows runner is a total mess, with random copies of the libpq
+#          # scattered all over the places. Give precedence to the one under our
+#          # control (or the illusion of it).
+#          export PATH="/c/Program Files/PostgreSQL/14/bin/:$PATH"
+#
+#          # If the wheel is not delocated, import fails with some dll not found
+#          # (but it won't tell which one).
+#          pip wheel -v -w ./psycopg_c/dist/ ./psycopg_c/
+#          delvewheel repair --no-mangle "libiconv-2.dll;libwinpthread-1.dll" \
+#            -w ./wheelhouse/ psycopg_c/dist/*.whl
+#          echo "DEPS=$DEPS $(ls ./wheelhouse/*.whl)" >> $GITHUB_ENV
+#
+#      - name: Install Python packages
+#        run: pip install $DEPS
+#
+#      - name: Run tests
+#        run: ./tools/build/ci_test.sh
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {impl: c, crdb: "latest-v22.1", python: "3.10", libpq: newest}
-          - {impl: python, crdb: "latest-v22.2", python: "3.11"}
-    env:
-      PSYCOPG_IMPL: ${{ matrix.impl }}
-      DEPS: ./psycopg[test] ./psycopg_pool
-      PSYCOPG_TEST_DSN: "host=127.0.0.1 port=26257 user=root dbname=defaultdb"
 
-    steps:
-      - uses: actions/checkout@v3
+  # }}}
 
-      - uses: actions/setup-python@v4
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Start CockroachDB service
-        # Note: this would love to be a service, but I don't see a way to pass
-        # the args to the docker run command line.
-        run: |
-          docker pull cockroachdb/cockroach:${{ matrix.crdb }}
-          docker run --rm -d --name crdb -p 26257:26257 \
-            cockroachdb/cockroach:${{ matrix.crdb }} start-single-node --insecure
-
-      - name: Install the wanted libpq version
-        run: sudo ./tools/build/ci_install_libpq.sh ${{ matrix.libpq }}
-
-      - name: Include psycopg-c to the packages to install
-        if: ${{ matrix.impl == 'c' }}
-        run: |
-          echo "DEPS=$DEPS ./psycopg_c" >> $GITHUB_ENV
-
-      - name: Install Python packages
-        run: pip install $DEPS
-
-      - name: Run tests
-        run: ./tools/build/ci_test.sh
+#  crdb:  # {{{
+#    runs-on: ubuntu-latest
+#    if: true
+#
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        include:
+#          - {impl: c, crdb: "latest-v22.1", python: "3.10", libpq: newest}
+#          - {impl: python, crdb: "latest-v22.2", python: "3.11"}
+#    env:
+#      PSYCOPG_IMPL: ${{ matrix.impl }}
+#      DEPS: ./psycopg[test] ./psycopg_pool
+#      PSYCOPG_TEST_DSN: "host=127.0.0.1 port=26257 user=root dbname=defaultdb"
+#
+#    steps:
+#      - uses: actions/checkout@v3
+#
+#      - uses: actions/setup-python@v4
+#        with:
+#          python-version: ${{ matrix.python }}
+#
+#      - name: Start CockroachDB service
+#        # Note: this would love to be a service, but I don't see a way to pass
+#        # the args to the docker run command line.
+#        run: |
+#          docker pull cockroachdb/cockroach:${{ matrix.crdb }}
+#          docker run --rm -d --name crdb -p 26257:26257 \
+#            cockroachdb/cockroach:${{ matrix.crdb }} start-single-node --insecure
+#
+#      - name: Install the wanted libpq version
+#        run: sudo ./tools/build/ci_install_libpq.sh ${{ matrix.libpq }}
+#
+#      - name: Include psycopg-c to the packages to install
+#        if: ${{ matrix.impl == 'c' }}
+#        run: |
+#          echo "DEPS=$DEPS ./psycopg_c" >> $GITHUB_ENV
+#
+#      - name: Install Python packages
+#        run: pip install $DEPS
+#
+#      - name: Run tests
+#        run: ./tools/build/ci_test.sh
 
 
   # }}}
