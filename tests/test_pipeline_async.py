@@ -13,7 +13,6 @@ from psycopg import errors as e
 from .test_pipeline import pipeline_aborted
 
 pytestmark = [
-    pytest.mark.asyncio,
     pytest.mark.pipeline,
     pytest.mark.skipif("not psycopg.AsyncPipeline.is_supported()"),
 ]
@@ -212,6 +211,7 @@ async def test_sync_syncs_results(aconn):
         assert cur.statusmessage == "SELECT 1"
 
 
+@pytest.mark.flakey("assert rarely fails randomly in CI blocking release")
 async def test_sync_syncs_errors(aconn):
     await aconn.set_autocommit(True)
     async with aconn.pipeline() as p:
