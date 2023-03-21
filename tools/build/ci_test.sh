@@ -20,7 +20,7 @@ for m in ${NOT_MARKERS:-}; do
     markers="$markers not $m"
 done
 
-pytest="python -bb -m pytest --color=yes --testmon"
+pytest="python -bb -m pytest --color=yes"
 
 $pytest -m "$markers" "$@" && exit 0
 
