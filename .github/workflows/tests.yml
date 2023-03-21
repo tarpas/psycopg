@@ -61,9 +61,9 @@ jobs:
         # Note: this would love to be a service, but I don't see a way to pass
         # the args to the docker run command line.
         run: |
-          docker pull postgres:14
+          docker pull "postgres:14"
           docker run --rm -d --name postgres -p 5432:5432 \
-            -e POSTGRES_PASSWORD=password ${{ matrix.postgres }} \
+            -e POSTGRES_PASSWORD=password "postgres:14" \
             -c max_prepared_transactions=10
 
       - name: Install the wanted libpq version
