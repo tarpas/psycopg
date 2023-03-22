@@ -91,7 +91,7 @@ jobs:
           echo "PIP_CONSTRAINT=${{ github.workspace }}/tests/constraints.txt" \
             >> $GITHUB_ENV
 
-      # Update original pip install with --editable ... --config-settings editable-mode=strict
+      #  Update original pip install with --editable ... --config-settings editable-mode=strict
       - name: Install Python packages
         run: pip install --editable $DEPS --config-settings editable-mode=strict
 
