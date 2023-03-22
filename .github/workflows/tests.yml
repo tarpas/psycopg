@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
 
-  linux:  # {{{
+  l:  # {{{
     runs-on: ubuntu-latest
     if: true
 
@@ -95,7 +95,7 @@ jobs:
       - name: Install Python packages
         run: pip install --editable $DEPS --config-settings editable-mode=strict
 
-      - name: Install pytest-testmon (commit-based)
+      - name: Install pytest-testmon
         run: pip install pytest-testmon==${{ matrix.ver }}
 
       - name: Run tests
