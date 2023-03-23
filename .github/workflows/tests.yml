@@ -27,12 +27,10 @@ jobs:
 #          - {impl: python, python: "3.7", postgres: "postgres:10", libpq: newest}
 #          - {impl: python, python: "3.8", postgres: "postgres:12"}
 #          - {impl: python, python: "3.9", postgres: "postgres:13"}
-          - {arg: "", ver: "1.4.5"}
-          - {arg: "--cov", ver: "1.4.5"}
-          - {arg: "--testmon", ver: "1.4.5"}
-          - {arg: "--testmon", ver: "2.0.0b2"}
-          - {arg: "--testmon --cov", ver: "1.4.5"}
-          - {arg: "--testmon --cov", ver: "2.0.0b2"}
+          - {arg: "", ver: "2.0.0"}
+          - {arg: "--cov", ver: "2.0.0"}
+          - {arg: "--testmon", ver: "2.0.0"}
+          - {arg: "--testmon --cov", ver: "2.0.0"}
 #          - {impl: python, python: "3.11", postgres: "postgres:15", libpq: oldest}
 #
 #          - {impl: c, python: "3.7", postgres: "postgres:15", libpq: newest}
