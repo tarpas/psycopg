@@ -273,12 +273,61 @@ The `!Connection` class
 
         If more queries need to be prepared, old ones are deallocated__.
 
+        Specifying `!None` can be useful for middleware that don't support
+        deallocation; see :ref:`prepared statements notes <pgbouncer>`.
+
         .. __: https://www.postgresql.org/docs/current/sql-deallocate.html
+
+        .. versionchanged:: 3.2
+
+            Added support for the `!None` value.
 
 
     .. rubric:: Methods you can use to do something cool
 
+    .. automethod:: cancel_safe
+
+        .. note::
+
+            You can use the `~Capabilities.has_cancel_safe` capability to check
+            if `!cancel_safe()` will not fall back on the legacy libpq
+            functions.
+
+        .. warning::
+
+            The `timeout` parameter has no effect for libpq older than version
+            17.
+
+        .. warning::
+
+            This method shouldn't be used as a `~signal.signal` handler.
+            Please use `cancel()` instead.
+
+        .. versionadded:: 3.2
+
     .. automethod:: cancel
+
+        .. warning::
+
+            The `!cancel()` method is implemented using the :pq:`PQcancel`
+            function, which is deprecated since PostgreSQL 17, and has a few
+            shortcomings:
+
+            - it is blocking even on async connections,
+            - it `might use an insecure connection`__ even if the original
+              connection was secure.
+
+            Therefore you should use the `cancel_safe()` method whenever
+            possible.
+
+            .. __: https://www.postgresql.org/docs/devel/libpq-cancel.html
+                   #LIBPQ-CANCEL-DEPRECATED
+
+        .. note::
+
+            Unlike `cancel_safe()`, it is safe to call this method as a
+            `~signal.signal` handler. This is pretty much the only case in
+            which you might want to use this function.
 
     .. automethod:: notifies
 
@@ -496,6 +545,10 @@ The `!AsyncConnection` class
 
                 async with conn.transaction() as tx:
                     ...
+
+    .. automethod:: cancel_safe
+
+        .. versionadded:: 3.2
 
     .. automethod:: notifies
 

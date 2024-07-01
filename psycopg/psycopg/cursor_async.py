@@ -7,8 +7,7 @@ Psycopg AsyncCursor object.
 from __future__ import annotations
 
 from types import TracebackType
-from typing import Any, AsyncIterator, Iterable, List, Optional, Type
-from typing import TYPE_CHECKING, overload
+from typing import Any, AsyncIterator, Iterable, TYPE_CHECKING, overload
 from contextlib import asynccontextmanager
 
 from . import pq
@@ -42,7 +41,7 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
         self,
         connection: AsyncConnection[Any],
         *,
-        row_factory: Optional[AsyncRowFactory[Row]] = None,
+        row_factory: AsyncRowFactory[Row] | None = None,
     ):
         super().__init__(connection)
         self._row_factory = row_factory or connection.row_factory
@@ -52,9 +51,9 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
 
     async def __aexit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
     ) -> None:
         await self.close()
 
@@ -81,10 +80,10 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
     async def execute(
         self,
         query: Query,
-        params: Optional[Params] = None,
+        params: Params | None = None,
         *,
-        prepare: Optional[bool] = None,
-        binary: Optional[bool] = None,
+        prepare: bool | None = None,
+        binary: bool | None = None,
     ) -> Self:
         """
         Execute a query or command to the database.
@@ -135,12 +134,17 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
     async def stream(
         self,
         query: Query,
-        params: Optional[Params] = None,
+        params: Params | None = None,
         *,
-        binary: Optional[bool] = None,
+        binary: bool | None = None,
+        size: int = 1,
     ) -> AsyncIterator[Row]:
         """
         Iterate row-by-row on a result from the database.
+
+        :param size: if greater than 1, results will be retrieved by chunks of
+            this size from the server (but still yielded row-by-row); this is only
+            available from version 17 of the libpq.
         """
         if self._pgconn.pipeline_status:
             raise e.ProgrammingError("stream() cannot be used in pipeline mode")
@@ -148,13 +152,15 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
         async with self._conn.lock:
             try:
                 await self._conn.wait(
-                    self._stream_send_gen(query, params, binary=binary)
+                    self._stream_send_gen(query, params, binary=binary, size=size)
                 )
                 first = True
                 while await self._conn.wait(self._stream_fetchone_gen(first)):
-                    # We know that, if we got a result, it has a single row.
-                    rec: Row = self._tx.load_row(0, self._make_row)  # type: ignore
-                    yield rec
+                    for pos in range(size):
+                        rec = self._tx.load_row(pos, self._make_row)
+                        if rec is None:
+                            break
+                        yield rec
                     first = False
 
             except e._NO_TRACEBACK as ex:
@@ -164,7 +170,7 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
                 if self._pgconn.transaction_status == ACTIVE:
                     # Try to cancel the query, then consume the results
                     # already received.
-                    self._conn.cancel()
+                    await self._conn._try_cancel()
                     try:
                         while await self._conn.wait(
                             self._stream_fetchone_gen(first=False)
@@ -180,13 +186,13 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
                     except Exception:
                         pass
 
-    async def fetchone(self) -> Optional[Row]:
+    async def fetchone(self) -> Row | None:
         """
         Return the next record from the current recordset.
 
         Return `!None` the recordset is finished.
 
-        :rtype: Optional[Row], with Row defined by `row_factory`
+        :rtype: Row | None, with Row defined by `row_factory`
         """
         await self._fetch_pipeline()
         self._check_result_for_fetch()
@@ -195,7 +201,7 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
             self._pos += 1
         return record
 
-    async def fetchmany(self, size: int = 0) -> List[Row]:
+    async def fetchmany(self, size: int = 0) -> list[Row]:
         """
         Return the next `!size` records from the current recordset.
 
@@ -217,7 +223,7 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
         self._pos += len(records)
         return records
 
-    async def fetchall(self) -> List[Row]:
+    async def fetchall(self) -> list[Row]:
         """
         Return all the remaining records from the current recordset.
 
@@ -234,7 +240,7 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
         await self._fetch_pipeline()
         self._check_result_for_fetch()
 
-        def load(pos: int) -> Optional[Row]:
+        def load(pos: int) -> Row | None:
             return self._tx.load_row(pos, self._make_row)
 
         while True:
@@ -262,9 +268,9 @@ class AsyncCursor(BaseCursor["AsyncConnection[Any]", Row]):
     async def copy(
         self,
         statement: Query,
-        params: Optional[Params] = None,
+        params: Params | None = None,
         *,
-        writer: Optional[AsyncWriter] = None,
+        writer: AsyncWriter | None = None,
     ) -> AsyncIterator[AsyncCopy]:
         """
         Initiate a :sql:`COPY` operation and return an object to manage it.

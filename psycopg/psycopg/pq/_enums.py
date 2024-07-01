@@ -31,6 +31,8 @@ class ConnStatus(IntEnum):
     GSS_STARTUP = auto()
     CHECK_TARGET = auto()
     CHECK_STANDBY = auto()
+    ALLOCATED = auto()  # Only for cancel connections.
+    """Connection to the server hasn't been initiated yet."""
 
 
 class PollingStatus(IntEnum):
@@ -118,6 +120,11 @@ class ExecStatus(IntEnum):
     PQgetResult must be called repeatedly, and each time it will return this
     status code until the end of the current pipeline, at which point it will
     return PGRES_PIPELINE_SYNC and normal processing can resume.
+    """
+    TUPLES_CHUNK = auto()
+    """The PGresult contains several result tuples from the current command.
+
+    This status occurs only when chunked mode has been selected for the query.
     """
 
 

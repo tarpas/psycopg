@@ -8,14 +8,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from types import TracebackType
-from typing import Any, AsyncIterator, Type, Tuple, Sequence, TYPE_CHECKING
+from typing import Any, AsyncIterator, Sequence, TYPE_CHECKING
 
 from . import pq
 from . import errors as e
 from ._compat import Self
-from ._copy_base import BaseCopy, MAX_BUFFER_SIZE, QUEUE_SIZE
+from ._copy_base import BaseCopy, MAX_BUFFER_SIZE, QUEUE_SIZE, PREFER_FLUSH
 from .generators import copy_to, copy_end
-from ._encodings import pgconn_encoding
 from ._acompat import aspawn, agather, AQueue, AWorker
 
 if TYPE_CHECKING:
@@ -25,6 +24,8 @@ if TYPE_CHECKING:
 
 COPY_IN = pq.ExecStatus.COPY_IN
 COPY_OUT = pq.ExecStatus.COPY_OUT
+
+ACTIVE = pq.TransactionStatus.ACTIVE
 
 
 class AsyncCopy(BaseCopy["AsyncConnection[Any]"]):
@@ -66,7 +67,7 @@ class AsyncCopy(BaseCopy["AsyncConnection[Any]"]):
 
     async def __aexit__(
         self,
-        exc_type: Type[BaseException] | None,
+        exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
@@ -90,7 +91,7 @@ class AsyncCopy(BaseCopy["AsyncConnection[Any]"]):
         """
         return await self.connection.wait(self._read_gen())
 
-    async def rows(self) -> AsyncIterator[Tuple[Any, ...]]:
+    async def rows(self) -> AsyncIterator[tuple[Any, ...]]:
         """
         Iterate on the result of a :sql:`COPY TO` operation record by record.
 
@@ -103,7 +104,7 @@ class AsyncCopy(BaseCopy["AsyncConnection[Any]"]):
                 break
             yield record
 
-    async def read_row(self) -> Tuple[Any, ...] | None:
+    async def read_row(self) -> tuple[Any, ...] | None:
         """
         Read a parsed row of data from a table after a :sql:`COPY TO` operation.
 
@@ -145,7 +146,20 @@ class AsyncCopy(BaseCopy["AsyncConnection[Any]"]):
             await self.writer.finish(exc)
             self._finished = True
         else:
-            await self.connection.wait(self._end_copy_out_gen(exc))
+            if not exc:
+                return
+
+            if self._pgconn.transaction_status != ACTIVE:
+                # The server has already finished to send copy data. The connection
+                # is already in a good state.
+                return
+
+            # Throw a cancel to the server, then consume the rest of the copy data
+            # (which might or might not have been already transferred entirely to
+            # the client, so we won't necessary see the exception associated with
+            # canceling).
+            await self.connection._try_cancel()
+            await self.connection.wait(self._end_copy_out_gen())
 
 
 class AsyncWriter(ABC):
@@ -183,20 +197,22 @@ class AsyncLibpqWriter(AsyncWriter):
         if len(data) <= MAX_BUFFER_SIZE:
             # Most used path: we don't need to split the buffer in smaller
             # bits, so don't make a copy.
-            await self.connection.wait(copy_to(self._pgconn, data))
+            await self.connection.wait(copy_to(self._pgconn, data, flush=PREFER_FLUSH))
         else:
             # Copy a buffer too large in chunks to avoid causing a memory
             # error in the libpq, which may cause an infinite loop (#255).
             for i in range(0, len(data), MAX_BUFFER_SIZE):
                 await self.connection.wait(
-                    copy_to(self._pgconn, data[i : i + MAX_BUFFER_SIZE])
+                    copy_to(
+                        self._pgconn, data[i : i + MAX_BUFFER_SIZE], flush=PREFER_FLUSH
+                    )
                 )
 
     async def finish(self, exc: BaseException | None = None) -> None:
         bmsg: bytes | None
         if exc:
             msg = f"error from Python: {type(exc).__qualname__} - {exc}"
-            bmsg = msg.encode(pgconn_encoding(self._pgconn), "replace")
+            bmsg = msg.encode(self._pgconn._encoding, "replace")
         else:
             bmsg = None
 
@@ -243,7 +259,9 @@ class AsyncQueuedLibpqWriter(AsyncLibpqWriter):
                 data = await self._queue.get()
                 if not data:
                     break
-                await self.connection.wait(copy_to(self._pgconn, data))
+                await self.connection.wait(
+                    copy_to(self._pgconn, data, flush=PREFER_FLUSH)
+                )
         except BaseException as ex:
             # Propagate the error to the main thread.
             self._worker_error = ex

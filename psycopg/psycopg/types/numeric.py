@@ -4,12 +4,13 @@ Adapters for numeric types.
 
 # Copyright (C) 2020 The Psycopg Team
 
+from __future__ import annotations
+
 import sys
 import struct
 from abc import ABC, abstractmethod
 from math import log
-from typing import Any, Callable, DefaultDict, Dict, Optional, Tuple, Union
-from typing import cast, TYPE_CHECKING
+from typing import Any, Callable, DefaultDict, cast, TYPE_CHECKING
 from decimal import Decimal, DefaultContext, Context
 
 from .. import _oids
@@ -38,16 +39,18 @@ if TYPE_CHECKING:
 
 
 class _IntDumper(Dumper):
-    def dump(self, obj: Any) -> Buffer:
+    def dump(self, obj: Any) -> Buffer | None:
         return str(obj).encode()
 
     def quote(self, obj: Any) -> Buffer:
         value = self.dump(obj)
+        if value is None:
+            return b"NULL"
         return value if obj >= 0 else b" " + value
 
 
 class _IntOrSubclassDumper(_IntDumper):
-    def dump(self, obj: Any) -> Buffer:
+    def dump(self, obj: Any) -> Buffer | None:
         t = type(obj)
         # Convert to int in order to dump IntEnum or numpy.integer correctly
         if t is not int:
@@ -57,14 +60,18 @@ class _IntOrSubclassDumper(_IntDumper):
 
 
 class _SpecialValuesDumper(Dumper):
-    _special: Dict[bytes, bytes] = {}
+    _special: dict[bytes, bytes] = {}
 
-    def dump(self, obj: Any) -> bytes:
+    def dump(self, obj: Any) -> Buffer | None:
         return str(obj).encode()
 
-    def quote(self, obj: Any) -> bytes:
+    def quote(self, obj: Any) -> Buffer:
         value = self.dump(obj)
 
+        if value is None:
+            return b"NULL"
+        if not isinstance(value, bytes):
+            value = bytes(value)
         if value in self._special:
             return self._special[value]
 
@@ -89,21 +96,21 @@ class FloatBinaryDumper(Dumper):
     format = Format.BINARY
     oid = _oids.FLOAT8_OID
 
-    def dump(self, obj: float) -> bytes:
+    def dump(self, obj: float) -> Buffer | None:
         return pack_float8(obj)
 
 
 class Float4BinaryDumper(FloatBinaryDumper):
     oid = _oids.FLOAT4_OID
 
-    def dump(self, obj: float) -> bytes:
+    def dump(self, obj: float) -> Buffer | None:
         return pack_float4(obj)
 
 
 class DecimalDumper(_SpecialValuesDumper):
     oid = _oids.NUMERIC_OID
 
-    def dump(self, obj: Decimal) -> bytes:
+    def dump(self, obj: Decimal) -> Buffer | None:
         return dump_decimal_to_text(obj)
 
     _special = {
@@ -134,7 +141,7 @@ class OidDumper(_IntOrSubclassDumper):
 
 
 class IntDumper(Dumper):
-    def dump(self, obj: Any) -> bytes:
+    def dump(self, obj: Any) -> Buffer | None:
         raise TypeError(
             f"{type(self).__name__} is a dispatcher to other dumpers:"
             " dump() is not supposed to be called"
@@ -164,21 +171,21 @@ class IntDumper(Dumper):
 class Int2BinaryDumper(Int2Dumper):
     format = Format.BINARY
 
-    def dump(self, obj: int) -> bytes:
+    def dump(self, obj: int) -> Buffer | None:
         return pack_int2(obj)
 
 
 class Int4BinaryDumper(Int4Dumper):
     format = Format.BINARY
 
-    def dump(self, obj: int) -> bytes:
+    def dump(self, obj: int) -> Buffer | None:
         return pack_int4(obj)
 
 
 class Int8BinaryDumper(Int8Dumper):
     format = Format.BINARY
 
-    def dump(self, obj: int) -> bytes:
+    def dump(self, obj: int) -> Buffer | None:
         return pack_int8(obj)
 
 
@@ -190,14 +197,14 @@ BIT_PER_PGDIGIT = log(2) / log(10_000)
 class IntNumericBinaryDumper(IntNumericDumper):
     format = Format.BINARY
 
-    def dump(self, obj: int) -> Buffer:
+    def dump(self, obj: int) -> Buffer | None:
         return dump_int_to_numeric_binary(obj)
 
 
 class OidBinaryDumper(OidDumper):
     format = Format.BINARY
 
-    def dump(self, obj: int) -> bytes:
+    def dump(self, obj: int) -> Buffer | None:
         return pack_uint4(obj)
 
 
@@ -308,7 +315,7 @@ for i in range(DefaultContext.prec):
     _contexts[i] = DefaultContext
 
 _unpack_numeric_head = cast(
-    Callable[[Buffer], Tuple[int, int, int, int]],
+    Callable[[Buffer], "tuple[int, int, int, int]"],
     struct.Struct("!HhHH").unpack_from,
 )
 _pack_numeric_head = cast(
@@ -350,7 +357,7 @@ class DecimalBinaryDumper(Dumper):
     format = Format.BINARY
     oid = _oids.NUMERIC_OID
 
-    def dump(self, obj: Decimal) -> Buffer:
+    def dump(self, obj: Decimal) -> Buffer | None:
         return dump_decimal_to_numeric_binary(obj)
 
 
@@ -363,9 +370,9 @@ class _MixedNumericDumper(Dumper, ABC):
     oid = _oids.NUMERIC_OID
 
     # If numpy is available, the dumped object might be a numpy integer too
-    int_classes: Union[type, Tuple[type, ...]] = ()
+    int_classes: type | tuple[type, ...] = ()
 
-    def __init__(self, cls: type, context: Optional[AdaptContext] = None):
+    def __init__(self, cls: type, context: AdaptContext | None = None):
         super().__init__(cls, context)
 
         # Verify if numpy is available. If it is, we might have to dump
@@ -379,11 +386,11 @@ class _MixedNumericDumper(Dumper, ABC):
                 _MixedNumericDumper.int_classes = int
 
     @abstractmethod
-    def dump(self, obj: Union[Decimal, int, "numpy.integer[Any]"]) -> Buffer: ...
+    def dump(self, obj: Decimal | int | numpy.integer[Any]) -> Buffer | None: ...
 
 
 class NumericDumper(_MixedNumericDumper):
-    def dump(self, obj: Union[Decimal, int, "numpy.integer[Any]"]) -> Buffer:
+    def dump(self, obj: Decimal | int | numpy.integer[Any]) -> Buffer | None:
         if isinstance(obj, self.int_classes):
             return str(obj).encode()
         elif isinstance(obj, Decimal):
@@ -397,7 +404,7 @@ class NumericDumper(_MixedNumericDumper):
 class NumericBinaryDumper(_MixedNumericDumper):
     format = Format.BINARY
 
-    def dump(self, obj: Union[Decimal, int, "numpy.integer[Any]"]) -> Buffer:
+    def dump(self, obj: Decimal | int | numpy.integer[Any]) -> Buffer | None:
         if type(obj) is int:
             return dump_int_to_numeric_binary(obj)
         elif isinstance(obj, Decimal):
@@ -418,7 +425,7 @@ def dump_decimal_to_text(obj: Decimal) -> bytes:
         return str(obj).encode()
 
 
-def dump_decimal_to_numeric_binary(obj: Decimal) -> Union[bytearray, bytes]:
+def dump_decimal_to_numeric_binary(obj: Decimal) -> bytearray | bytes:
     sign, digits, exp = obj.as_tuple()
     if exp == "n" or exp == "N":
         return NUMERIC_NAN_BIN

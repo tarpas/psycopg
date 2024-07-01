@@ -4,9 +4,10 @@ Psycopg BaseCursor object
 
 # Copyright (C) 2020 The Psycopg Team
 
+from __future__ import annotations
+
 from functools import partial
-from typing import Any, Generic, Iterable, List
-from typing import Optional, NoReturn, Sequence, Tuple, Type
+from typing import Any, Generic, Iterable, NoReturn, Sequence
 from typing import TYPE_CHECKING
 
 from . import pq
@@ -14,10 +15,10 @@ from . import adapt
 from . import errors as e
 from .abc import ConnectionType, Query, Params, PQGen
 from .rows import Row, RowMaker
+from ._capabilities import capabilities
 from ._column import Column
 from .pq.misc import connection_summary
 from ._queries import PostgresQuery, PostgresClientQuery
-from ._encodings import pgconn_encoding
 from ._preparing import Prepare
 from .generators import execute, fetch, send
 
@@ -36,6 +37,7 @@ COPY_IN = pq.ExecStatus.COPY_IN
 COPY_BOTH = pq.ExecStatus.COPY_BOTH
 FATAL_ERROR = pq.ExecStatus.FATAL_ERROR
 SINGLE_TUPLE = pq.ExecStatus.SINGLE_TUPLE
+TUPLES_CHUNK = pq.ExecStatus.TUPLES_CHUNK
 PIPELINE_ABORTED = pq.ExecStatus.PIPELINE_ABORTED
 
 ACTIVE = pq.TransactionStatus.ACTIVE
@@ -49,12 +51,10 @@ class BaseCursor(Generic[ConnectionType, Row]):
         __weakref__
         """.split()
 
-    ExecStatus = pq.ExecStatus
-
-    _tx: "Transformer"
+    _tx: Transformer
     _make_row: RowMaker[Row]
-    _pgconn: "PGconn"
-    _query_cls: Type[PostgresQuery] = PostgresQuery
+    _pgconn: PGconn
+    _query_cls: type[PostgresQuery] = PostgresQuery
 
     def __init__(self, connection: ConnectionType):
         self._conn = connection
@@ -63,18 +63,18 @@ class BaseCursor(Generic[ConnectionType, Row]):
         self._adapters = adapt.AdaptersMap(connection.adapters)
         self.arraysize = 1
         self._closed = False
-        self._last_query: Optional[Query] = None
+        self._last_query: Query | None = None
         self._reset()
 
     def _reset(self, reset_query: bool = True) -> None:
-        self._results: List["PGresult"] = []
-        self.pgresult: Optional["PGresult"] = None
+        self._results: list[PGresult] = []
+        self.pgresult: PGresult | None = None
         self._pos = 0
         self._iresult = 0
         self._rowcount = -1
-        self._query: Optional[PostgresQuery]
+        self._query: PostgresQuery | None
         # None if executemany() not executing, True/False according to returning state
-        self._execmany_returning: Optional[bool] = None
+        self._execmany_returning: bool | None = None
         if reset_query:
             self._query = None
 
@@ -104,7 +104,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
         return self._closed
 
     @property
-    def description(self) -> Optional[List[Column]]:
+    def description(self) -> list[Column] | None:
         """
         A list of `Column` objects describing the current resultset.
 
@@ -116,7 +116,10 @@ class BaseCursor(Generic[ConnectionType, Row]):
         # the query said we got tuples (mostly to handle the super useful
         # query "SELECT ;"
         if res and (
-            res.nfields or res.status == TUPLES_OK or res.status == SINGLE_TUPLE
+            res.nfields
+            or res.status == TUPLES_OK
+            or res.status == SINGLE_TUPLE
+            or res.status == TUPLES_CHUNK
         ):
             return [Column(self, i) for i in range(res.nfields)]
         else:
@@ -128,7 +131,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
         return self._rowcount
 
     @property
-    def rownumber(self) -> Optional[int]:
+    def rownumber(self) -> int | None:
         """Index of the next row to fetch in the current result.
 
         `!None` if there is no result to fetch.
@@ -140,11 +143,11 @@ class BaseCursor(Generic[ConnectionType, Row]):
         # no-op
         pass
 
-    def setoutputsize(self, size: Any, column: Optional[int] = None) -> None:
+    def setoutputsize(self, size: Any, column: int | None = None) -> None:
         # no-op
         pass
 
-    def nextset(self) -> Optional[bool]:
+    def nextset(self) -> bool | None:
         """
         Move to the result set of the next query executed through `executemany()`
         or to the next result set if `execute()` returned more than one.
@@ -159,7 +162,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
             return None
 
     @property
-    def statusmessage(self) -> Optional[str]:
+    def statusmessage(self) -> str | None:
         """
         The command status tag from the last SQL command executed.
 
@@ -182,10 +185,10 @@ class BaseCursor(Generic[ConnectionType, Row]):
     def _execute_gen(
         self,
         query: Query,
-        params: Optional[Params] = None,
+        params: Params | None = None,
         *,
-        prepare: Optional[bool] = None,
-        binary: Optional[bool] = None,
+        prepare: bool | None = None,
+        binary: bool | None = None,
     ) -> PQGen[None]:
         """Generator implementing `Cursor.execute()`."""
         yield from self._start_query(query)
@@ -195,9 +198,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
             yield from self._conn._pipeline._communicate_gen()
 
         self._last_query = query
-
-        for cmd in self._conn._prepared.get_maintenance_commands():
-            yield from self._conn._exec_command(cmd)
+        yield from self._conn._prepared.maintain_gen(self._conn)
 
     def _executemany_gen_pipeline(
         self, query: Query, params_seq: Iterable[Params], returning: bool
@@ -232,8 +233,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
         if returning:
             yield from pipeline._fetch_gen(flush=True)
 
-        for cmd in self._conn._prepared.get_maintenance_commands():
-            yield from self._conn._exec_command(cmd)
+        yield from self._conn._prepared.maintain_gen(self._conn)
 
     def _executemany_gen_no_pipeline(
         self, query: Query, params_seq: Iterable[Params], returning: bool
@@ -260,16 +260,14 @@ class BaseCursor(Generic[ConnectionType, Row]):
             yield from self._maybe_prepare_gen(pgq, prepare=True)
 
         self._last_query = query
-
-        for cmd in self._conn._prepared.get_maintenance_commands():
-            yield from self._conn._exec_command(cmd)
+        yield from self._conn._prepared.maintain_gen(self._conn)
 
     def _maybe_prepare_gen(
         self,
         pgq: PostgresQuery,
         *,
-        prepare: Optional[bool] = None,
-        binary: Optional[bool] = None,
+        prepare: bool | None = None,
+        binary: bool | None = None,
     ) -> PQGen[None]:
         # Check if the query is prepared or needs preparing
         prep, name = self._get_prepared(pgq, prepare)
@@ -309,32 +307,39 @@ class BaseCursor(Generic[ConnectionType, Row]):
         self._set_results(results)
 
     def _get_prepared(
-        self, pgq: PostgresQuery, prepare: Optional[bool] = None
-    ) -> Tuple[Prepare, bytes]:
+        self, pgq: PostgresQuery, prepare: bool | None = None
+    ) -> tuple[Prepare, bytes]:
         return self._conn._prepared.get(pgq, prepare)
 
     def _stream_send_gen(
         self,
         query: Query,
-        params: Optional[Params] = None,
+        params: Params | None = None,
         *,
-        binary: Optional[bool] = None,
+        binary: bool | None = None,
+        size: int,
     ) -> PQGen[None]:
         """Generator to send the query for `Cursor.stream()`."""
         yield from self._start_query(query)
         pgq = self._convert_query(query, params)
         self._execute_send(pgq, binary=binary, force_extended=True)
-        self._pgconn.set_single_row_mode()
+        if size < 1:
+            raise ValueError("size must be >= 1")
+        elif size == 1:
+            self._pgconn.set_single_row_mode()
+        else:
+            capabilities.has_stream_chunked(check=True)
+            self._pgconn.set_chunked_rows_mode(size)
         self._last_query = query
         yield from send(self._pgconn)
 
-    def _stream_fetchone_gen(self, first: bool) -> PQGen[Optional["PGresult"]]:
+    def _stream_fetchone_gen(self, first: bool) -> PQGen[PGresult | None]:
         res = yield from fetch(self._pgconn)
         if res is None:
             return None
 
         status = res.status
-        if status == SINGLE_TUPLE:
+        if status == SINGLE_TUPLE or status == TUPLES_CHUNK:
             self.pgresult = res
             self._tx.set_pgresult(res, set_loaders=first)
             if first:
@@ -355,7 +360,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
             # Errors, unexpected values
             return self._raise_for_result(res)
 
-    def _start_query(self, query: Optional[Query] = None) -> PQGen[None]:
+    def _start_query(self, query: Query | None = None) -> PQGen[None]:
         """Generator to start the processing of a query.
 
         It is implemented as generator because it may send additional queries,
@@ -371,7 +376,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
         yield from self._conn._start_query()
 
     def _start_copy_gen(
-        self, statement: Query, params: Optional[Params] = None
+        self, statement: Query, params: Params | None = None
     ) -> PQGen[None]:
         """Generator implementing sending a command for `Cursor.copy()."""
 
@@ -403,7 +408,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
         query: PostgresQuery,
         *,
         force_extended: bool = False,
-        binary: Optional[bool] = None,
+        binary: bool | None = None,
     ) -> None:
         """
         Implement part of execute() before waiting common to sync and async.
@@ -444,13 +449,13 @@ class BaseCursor(Generic[ConnectionType, Row]):
             self._pgconn.send_query(query.query)
 
     def _convert_query(
-        self, query: Query, params: Optional[Params] = None
+        self, query: Query, params: Params | None = None
     ) -> PostgresQuery:
         pgq = self._query_cls(self._tx)
         pgq.convert(query, params)
         return pgq
 
-    def _check_results(self, results: List["PGresult"]) -> None:
+    def _check_results(self, results: list[PGresult]) -> None:
         """
         Verify that the results of a query are valid.
 
@@ -465,7 +470,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
             if status != TUPLES_OK and status != COMMAND_OK and status != EMPTY_QUERY:
                 self._raise_for_result(res)
 
-    def _raise_for_result(self, result: "PGresult") -> NoReturn:
+    def _raise_for_result(self, result: PGresult) -> NoReturn:
         """
         Raise an appropriate error message for an unexpected database result
         """
@@ -483,9 +488,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
                 "unexpected result status from query:" f" {pq.ExecStatus(status).name}"
             )
 
-    def _select_current_result(
-        self, i: int, format: Optional[pq.Format] = None
-    ) -> None:
+    def _select_current_result(self, i: int, format: pq.Format | None = None) -> None:
         """
         Select one of the results in the cursor as the active one.
         """
@@ -511,7 +514,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
 
         self._make_row = self._make_row_maker()
 
-    def _set_results(self, results: List["PGresult"]) -> None:
+    def _set_results(self, results: list[PGresult]) -> None:
         if self._execmany_returning is None:
             # Received from execute()
             self._results[:] = results
@@ -545,7 +548,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
             self._pgconn.send_prepare(name, query.query, param_types=query.types)
 
     def _send_query_prepared(
-        self, name: bytes, pgq: PostgresQuery, *, binary: Optional[bool] = None
+        self, name: bytes, pgq: PostgresQuery, *, binary: bool | None = None
     ) -> None:
         if binary is None:
             fmt = self.format
@@ -584,7 +587,7 @@ class BaseCursor(Generic[ConnectionType, Row]):
         else:
             raise e.ProgrammingError("the last operation didn't produce a result")
 
-    def _check_copy_result(self, result: "PGresult") -> None:
+    def _check_copy_result(self, result: PGresult) -> None:
         """
         Check that the value returned in a copy() operation is a legit COPY.
         """
@@ -621,4 +624,4 @@ class BaseCursor(Generic[ConnectionType, Row]):
 
     @property
     def _encoding(self) -> str:
-        return pgconn_encoding(self._pgconn)
+        return self._pgconn._encoding

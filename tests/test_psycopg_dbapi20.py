@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import pytest
 import datetime as dt
-from typing import Any, Dict
+from typing import Any
 
 import psycopg
 from psycopg.conninfo import conninfo_to_dict
@@ -18,7 +20,7 @@ def with_dsn(request, session_dsn):
 class PsycopgTests(dbapi20.DatabaseAPI20Test):
     driver = psycopg
     # connect_args = () # set by the fixture
-    connect_kw_args: Dict[Any, Any] = {}
+    connect_kw_args: dict[Any, Any] = {}
 
     def test_nextset(self):
         # tested elsewhere
@@ -135,7 +137,7 @@ def test_time_from_ticks(ticks, want):
 def test_connect_args(monkeypatch, pgconn, args, kwargs, want, setpgenv, fake_resolve):
     got_conninfo: str
 
-    def fake_connect(conninfo):
+    def fake_connect(conninfo, *, timeout=0.0):
         nonlocal got_conninfo
         got_conninfo = conninfo
         return pgconn
@@ -157,9 +159,5 @@ def test_connect_args(monkeypatch, pgconn, args, kwargs, want, setpgenv, fake_re
     ],
 )
 def test_connect_badargs(monkeypatch, pgconn, args, kwargs, exctype):
-    def fake_connect(conninfo):
-        return pgconn
-        yield
-
     with pytest.raises(exctype):
         psycopg.connect(*args, **kwargs)

@@ -1,4 +1,4 @@
-from typing import Optional
+from __future__ import annotations
 
 import pytest
 
@@ -53,7 +53,7 @@ def check_crdb_version(got, mark):
 is_crdb = CrdbConnection.is_crdb
 
 
-def crdb_skip_message(reason: Optional[str]) -> str:
+def crdb_skip_message(reason: str | None) -> str:
     msg = ""
     if reason:
         msg = reason
@@ -74,11 +74,6 @@ def skip_crdb(*args, reason=None):
 def crdb_encoding(*args):
     """Mark tests that fail on CockroachDB because of missing encodings"""
     return skip_crdb(*args, reason="encoding")
-
-
-def crdb_time_precision(*args):
-    """Mark tests that fail on CockroachDB because time doesn't support precision"""
-    return skip_crdb(*args, reason="time precision")
 
 
 def crdb_scs_off(*args):

@@ -1,6 +1,7 @@
 import sys
 import pytest
 import psycopg
+from psycopg import pq
 
 
 # TODOCRDB: is this the expected behaviour?
@@ -37,22 +38,22 @@ def inserted(conn):
     sql = "SELECT * FROM test_table"
     if isinstance(conn, psycopg.Connection):
         rows = conn.cursor().execute(sql).fetchall()
-        return set(v for (v,) in rows)
+        return {v for (v,) in rows}
     else:
 
         async def f():
             cur = conn.cursor()
             await cur.execute(sql)
             rows = await cur.fetchall()
-            return set(v for (v,) in rows)
+            return {v for (v,) in rows}
 
         return f()
 
 
 def in_transaction(conn):
-    if conn.pgconn.transaction_status == conn.TransactionStatus.IDLE:
+    if conn.pgconn.transaction_status == pq.TransactionStatus.IDLE:
         return False
-    elif conn.pgconn.transaction_status == conn.TransactionStatus.INTRANS:
+    elif conn.pgconn.transaction_status == pq.TransactionStatus.INTRANS:
         return True
     else:
         assert False, conn.pgconn.transaction_status

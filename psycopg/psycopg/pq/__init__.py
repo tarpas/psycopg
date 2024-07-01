@@ -9,13 +9,15 @@ implementation-dependant but all the implementations share the same interface.
 
 # Copyright (C) 2020 The Psycopg Team
 
+from __future__ import annotations
+
 import os
 import logging
-from typing import Callable, List, Type
+from typing import Callable
 
 from . import abc
 from .misc import ConninfoOption, PGnotify, PGresAttDesc
-from .misc import error_message
+from .misc import error_message, version_pretty
 from ._enums import ConnStatus, DiagnosticField, ExecStatus, Format, Trace
 from ._enums import Ping, PipelineStatus, PollingStatus, TransactionStatus
 
@@ -38,11 +40,12 @@ Certain features might not be available if the built version is too old.
 """
 
 version: Callable[[], int]
-PGconn: Type[abc.PGconn]
-PGresult: Type[abc.PGresult]
-Conninfo: Type[abc.Conninfo]
-Escaping: Type[abc.Escaping]
-PGcancel: Type[abc.PGcancel]
+PGconn: type[abc.PGconn]
+PGresult: type[abc.PGresult]
+Conninfo: type[abc.Conninfo]
+Escaping: type[abc.Escaping]
+PGcancel: type[abc.PGcancel]
+PGcancelConn: type[abc.PGcancelConn]
 
 
 def import_from_libpq() -> None:
@@ -54,11 +57,11 @@ def import_from_libpq() -> None:
     """
     # import these names into the module on success as side effect
     global __impl__, version, __build_version__
-    global PGconn, PGresult, Conninfo, Escaping, PGcancel
+    global PGconn, PGresult, Conninfo, Escaping, PGcancel, PGcancelConn
 
     impl = os.environ.get("PSYCOPG_IMPL", "").lower()
     module = None
-    attempts: List[str] = []
+    attempts: list[str] = []
 
     def handle_error(name: str, e: Exception) -> None:
         if not impl:
@@ -98,6 +101,7 @@ def import_from_libpq() -> None:
         Conninfo = module.Conninfo
         Escaping = module.Escaping
         PGcancel = module.PGcancel
+        PGcancelConn = module.PGcancelConn
         __build_version__ = module.__build_version__
     elif impl:
         raise ImportError(f"requested psycopg implementation '{impl}' unknown")
@@ -130,4 +134,5 @@ __all__ = (
     "error_message",
     "ConninfoOption",
     "version",
+    "version_pretty",
 )

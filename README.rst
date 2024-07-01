@@ -43,15 +43,14 @@ different requirements:
   C/Cython. In order to build it you will need a few development tools: please
   look at `Local installation`__ in the docs for the details.
 
-  .. __: https://www.psycopg.org/psycopg3/docs/basic/install.html#local-installation
-
 - The ``psycopg_pool`` directory contains the `connection pools`__
   implementations. This is kept as a separate package to allow a different
   release cycle.
 
-  .. __: https://www.psycopg.org/psycopg3/docs/advanced/pool.html
+.. __: https://www.psycopg.org/psycopg3/docs/basic/install.html#local-installation
+.. __: https://www.psycopg.org/psycopg3/docs/advanced/pool.html
 
-You can create a local virtualenv and install there the packages `in
+You can create a local virtualenv and install the packages `in
 development mode`__, together with their development and testing
 requirements::
 

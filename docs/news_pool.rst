@@ -7,18 +7,18 @@
 ``psycopg_pool`` release notes
 ==============================
 
-Future releases
+Current release
 ---------------
 
-psycopg_pool 3.2.2 (unreleased)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+psycopg_pool 3.2.2
+^^^^^^^^^^^^^^^^^^
 
 - Raise a `RuntimeWarning` instead of a `DeprecationWarning` if an async pool
   is open in the constructor.
+- Fix connections possibly left in the pool after closing (:ticket:`#784`).
+- Use an empty query instead of ``SELECT 1`` to check connections
+  (:ticket:`#790`).
 
-
-Current release
----------------
 
 psycopg_pool 3.2.1
 ^^^^^^^^^^^^^^^^^^
@@ -31,7 +31,7 @@ psycopg_pool 3.2.1
 
 
 psycopg_pool 3.2.0
-^^^^^^^^^^^^^^^^^^
+------------------
 
 - Add support for async `!reconnect_failed` callbacks in `AsyncConnectionPool`
   (:ticket:`#520`).

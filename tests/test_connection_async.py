@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import sys
 import time
 import pytest
 import logging
 import weakref
-from typing import Any, List
+from typing import Any
 
 import psycopg
 from psycopg import pq, errors as e
@@ -21,7 +23,7 @@ from .test_adapt import make_bin_dumper, make_dumper
 async def test_connect(aconn_cls, dsn):
     conn = await aconn_cls.connect(dsn)
     assert not conn.closed
-    assert conn.pgconn.status == conn.ConnStatus.OK
+    assert conn.pgconn.status == pq.ConnStatus.OK
     await conn.close()
 
 
@@ -36,50 +38,53 @@ async def test_connect_str_subclass(aconn_cls, dsn):
 
     conn = await aconn_cls.connect(MyString(dsn))
     assert not conn.closed
-    assert conn.pgconn.status == conn.ConnStatus.OK
+    assert conn.pgconn.status == pq.ConnStatus.OK
     await conn.close()
 
 
 @pytest.mark.slow
 @pytest.mark.timing
-async def test_connect_timeout(aconn_cls, deaf_port):
-    t0 = time.time()
-    with pytest.raises(psycopg.OperationalError, match="timeout expired"):
-        await aconn_cls.connect(host="localhost", port=deaf_port, connect_timeout=2)
-    elapsed = time.time() - t0
-    assert elapsed == pytest.approx(2.0, abs=0.05)
+async def test_connect_timeout(aconn_cls, proxy):
+    with proxy.deaf_listen():
+        t0 = time.time()
+        with pytest.raises(psycopg.OperationalError, match="timeout expired"):
+            await aconn_cls.connect(proxy.client_dsn, connect_timeout=2)
+        elapsed = time.time() - t0
+    assert elapsed == pytest.approx(2.0, 0.1)
 
 
 @pytest.mark.slow
 @pytest.mark.timing
-async def test_multi_hosts(aconn_cls, proxy, dsn, deaf_port, monkeypatch):
+async def test_multi_hosts(aconn_cls, proxy, dsn, monkeypatch):
     args = conninfo_to_dict(dsn)
     args["host"] = f"{proxy.client_host},{proxy.server_host}"
-    args["port"] = f"{deaf_port},{proxy.server_port}"
+    args["port"] = f"{proxy.client_port},{proxy.server_port}"
     args.pop("hostaddr", None)
     monkeypatch.setattr(psycopg.conninfo, "_DEFAULT_CONNECT_TIMEOUT", 2)
-    t0 = time.time()
-    async with await aconn_cls.connect(**args) as conn:
-        elapsed = time.time() - t0
-        assert 2.0 < elapsed < 2.5
-        assert conn.info.port == int(proxy.server_port)
-        assert conn.info.host == proxy.server_host
+    with proxy.deaf_listen():
+        t0 = time.time()
+        async with await aconn_cls.connect(**args) as conn:
+            elapsed = time.time() - t0
+            assert elapsed == pytest.approx(2.0, 0.1)
+            assert conn.info.port == int(proxy.server_port)
+            assert conn.info.host == proxy.server_host
 
 
 @pytest.mark.slow
 @pytest.mark.timing
-async def test_multi_hosts_timeout(aconn_cls, proxy, dsn, deaf_port):
+async def test_multi_hosts_timeout(aconn_cls, proxy, dsn):
     args = conninfo_to_dict(dsn)
     args["host"] = f"{proxy.client_host},{proxy.server_host}"
-    args["port"] = f"{deaf_port},{proxy.server_port}"
+    args["port"] = f"{proxy.client_port},{proxy.server_port}"
     args.pop("hostaddr", None)
     args["connect_timeout"] = "2"
-    t0 = time.time()
-    async with await aconn_cls.connect(**args) as conn:
-        elapsed = time.time() - t0
-        assert 2.0 < elapsed < 2.5
-        assert conn.info.port == int(proxy.server_port)
-        assert conn.info.host == proxy.server_host
+    with proxy.deaf_listen():
+        t0 = time.time()
+        async with await aconn_cls.connect(**args) as conn:
+            elapsed = time.time() - t0
+            assert elapsed == pytest.approx(2.0, 0.1)
+            assert conn.info.port == int(proxy.server_port)
+            assert conn.info.host == proxy.server_host
 
 
 async def test_close(aconn):
@@ -91,11 +96,11 @@ async def test_close(aconn):
     await aconn.close()
     assert aconn.closed
     assert not aconn.broken
-    assert aconn.pgconn.status == aconn.ConnStatus.BAD
+    assert aconn.pgconn.status == pq.ConnStatus.BAD
 
     await aconn.close()
     assert aconn.closed
-    assert aconn.pgconn.status == aconn.ConnStatus.BAD
+    assert aconn.pgconn.status == pq.ConnStatus.BAD
 
     with pytest.raises(psycopg.OperationalError):
         await cur.execute("select 1")
@@ -232,7 +237,7 @@ async def test_context_active_rollback_no_clobber(aconn_cls, dsn, caplog):
             conn.pgconn.exec_(b"copy (select generate_series(1, 10)) to stdout")
             assert not conn.pgconn.error_message
             status = conn.info.transaction_status
-            assert status == conn.TransactionStatus.ACTIVE
+            assert status == pq.TransactionStatus.ACTIVE
             1 / 0
 
     assert len(caplog.records) == 1
@@ -255,10 +260,10 @@ async def test_commit(aconn):
     aconn.pgconn.exec_(b"drop table if exists foo")
     aconn.pgconn.exec_(b"create table foo (id int primary key)")
     aconn.pgconn.exec_(b"begin")
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.INTRANS
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.INTRANS
     aconn.pgconn.exec_(b"insert into foo values (1)")
     await aconn.commit()
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.IDLE
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.IDLE
     res = aconn.pgconn.exec_(b"select id from foo where id = 1")
     assert res.get_value(0, 0) == b"1"
 
@@ -282,7 +287,7 @@ async def test_commit_error(aconn):
     await aconn.execute("insert into selfref (y) values (-1)")
     with pytest.raises(e.ForeignKeyViolation):
         await aconn.commit()
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.IDLE
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.IDLE
     cur = await aconn.execute("select 1")
     assert await cur.fetchone() == (1,)
 
@@ -291,10 +296,10 @@ async def test_rollback(aconn):
     aconn.pgconn.exec_(b"drop table if exists foo")
     aconn.pgconn.exec_(b"create table foo (id int primary key)")
     aconn.pgconn.exec_(b"begin")
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.INTRANS
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.INTRANS
     aconn.pgconn.exec_(b"insert into foo values (1)")
     await aconn.rollback()
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.IDLE
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.IDLE
     res = aconn.pgconn.exec_(b"select id from foo where id = 1")
     assert res.ntuples == 0
 
@@ -308,16 +313,16 @@ async def test_auto_transaction(aconn):
     aconn.pgconn.exec_(b"create table foo (id int primary key)")
 
     cur = aconn.cursor()
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.IDLE
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.IDLE
 
     await cur.execute("insert into foo values (1)")
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.INTRANS
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.INTRANS
 
     await aconn.commit()
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.IDLE
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.IDLE
     await cur.execute("select * from foo")
     assert await cur.fetchone() == (1,)
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.INTRANS
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.INTRANS
 
 
 async def test_auto_transaction_fail(aconn):
@@ -325,23 +330,23 @@ async def test_auto_transaction_fail(aconn):
     aconn.pgconn.exec_(b"create table foo (id int primary key)")
 
     cur = aconn.cursor()
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.IDLE
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.IDLE
 
     await cur.execute("insert into foo values (1)")
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.INTRANS
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.INTRANS
 
     with pytest.raises(psycopg.DatabaseError):
         await cur.execute("meh")
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.INERROR
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.INERROR
 
     with pytest.raises(psycopg.errors.InFailedSqlTransaction):
         await cur.execute("select 1")
 
     await aconn.commit()
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.IDLE
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.IDLE
     await cur.execute("select * from foo")
     assert await cur.fetchone() is None
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.INTRANS
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.INTRANS
 
 
 @skip_sync
@@ -358,7 +363,7 @@ async def test_autocommit(aconn):
     cur = aconn.cursor()
     await cur.execute("select 1")
     assert await cur.fetchone() == (1,)
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.IDLE
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.IDLE
 
     await aconn.set_autocommit("")
     assert isinstance(aconn.autocommit, bool)
@@ -378,7 +383,7 @@ def test_autocommit_property(conn):
     cur = conn.cursor()
     cur.execute("select 1")
     assert cur.fetchone() == (1,)
-    assert conn.pgconn.transaction_status == conn.TransactionStatus.IDLE
+    assert conn.pgconn.transaction_status == pq.TransactionStatus.IDLE
 
     conn.autocommit = ""
     assert isinstance(conn.autocommit, bool)
@@ -399,7 +404,7 @@ async def test_autocommit_intrans(aconn):
     cur = aconn.cursor()
     await cur.execute("select 1")
     assert await cur.fetchone() == (1,)
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.INTRANS
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.INTRANS
     with pytest.raises(psycopg.ProgrammingError):
         await aconn.set_autocommit(True)
     assert not aconn.autocommit
@@ -409,7 +414,7 @@ async def test_autocommit_inerror(aconn):
     cur = aconn.cursor()
     with pytest.raises(psycopg.DatabaseError):
         await cur.execute("meh")
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.INERROR
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.INERROR
     with pytest.raises(psycopg.ProgrammingError):
         await aconn.set_autocommit(True)
     assert not aconn.autocommit
@@ -417,7 +422,7 @@ async def test_autocommit_inerror(aconn):
 
 async def test_autocommit_unknown(aconn):
     await aconn.close()
-    assert aconn.pgconn.transaction_status == aconn.TransactionStatus.UNKNOWN
+    assert aconn.pgconn.transaction_status == pq.TransactionStatus.UNKNOWN
     with pytest.raises(psycopg.OperationalError):
         await aconn.set_autocommit(True)
     assert not aconn.autocommit
@@ -443,7 +448,7 @@ async def test_connect_args(
 ):
     got_conninfo: str
 
-    def fake_connect(conninfo):
+    def fake_connect(conninfo, *, timeout=0.0):
         nonlocal got_conninfo
         got_conninfo = conninfo
         return pgconn
@@ -465,11 +470,6 @@ async def test_connect_args(
     ],
 )
 async def test_connect_badargs(aconn_cls, monkeypatch, pgconn, args, kwargs, exctype):
-    def fake_connect(conninfo):
-        return pgconn
-        yield
-
-    monkeypatch.setattr(psycopg.generators, "connect", fake_connect)
     with pytest.raises(exctype):
         await aconn_cls.connect(*args, **kwargs)
 
@@ -725,7 +725,7 @@ async def test_set_transaction_param_not_intrans_external(aconn, param):
 @skip_async
 @pytest.mark.crdb("skip", reason="transaction isolation")
 def test_set_transaction_param_all_property(conn):
-    params: List[Any] = tx_params[:]
+    params: list[Any] = tx_params[:]
     params[2] = params[2].values[0]
 
     for param in params:
@@ -740,7 +740,7 @@ def test_set_transaction_param_all_property(conn):
 
 @pytest.mark.crdb("skip", reason="transaction isolation")
 async def test_set_transaction_param_all(aconn):
-    params: List[Any] = tx_params[:]
+    params: list[Any] = tx_params[:]
     params[2] = params[2].values[0]
 
     for param in params:
@@ -824,6 +824,45 @@ async def test_connect_context_copy(aconn_cls, dsn, aconn):
 async def test_cancel_closed(aconn):
     await aconn.close()
     aconn.cancel()
+
+
+async def test_cancel_safe_closed(aconn):
+    await aconn.close()
+    await aconn.cancel_safe()
+
+
+@pytest.mark.slow
+@pytest.mark.timing
+async def test_cancel_safe_error(aconn_cls, proxy, caplog):
+    caplog.set_level(logging.WARNING, logger="psycopg")
+    proxy.start()
+    async with await aconn_cls.connect(proxy.client_dsn) as aconn:
+        proxy.stop()
+        with pytest.raises(
+            e.OperationalError, match=r"(Connection refused)|(connect\(\) failed)"
+        ) as ex:
+            await aconn.cancel_safe(timeout=2)
+        assert not caplog.records
+
+        # Note: testing an internal method. It's ok if this behaviour changes
+        await aconn._try_cancel(timeout=2.0)
+        assert len(caplog.records) == 1
+        caplog.records[0].message == str(ex.value)
+
+
+@pytest.mark.slow
+@pytest.mark.timing
+@pytest.mark.libpq(">= 17")
+async def test_cancel_safe_timeout(aconn_cls, proxy):
+    proxy.start()
+    async with await aconn_cls.connect(proxy.client_dsn) as aconn:
+        proxy.stop()
+        with proxy.deaf_listen():
+            t0 = time.time()
+            with pytest.raises(e.CancellationTimeout, match="timeout expired"):
+                await aconn.cancel_safe(timeout=1)
+    elapsed = time.time() - t0
+    assert elapsed == pytest.approx(1.0, 0.1)
 
 
 async def test_resolve_hostaddr_conn(aconn_cls, monkeypatch, fake_resolve):

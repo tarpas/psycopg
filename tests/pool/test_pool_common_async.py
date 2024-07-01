@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import logging
 from time import time
-from typing import Any, List, Tuple
+from typing import Any
 
 import pytest
 
@@ -19,9 +21,9 @@ if True:  # ASYNC
     pytestmark = [pytest.mark.anyio]
 
 
-@pytest.fixture(params=[pool.AsyncConnectionPool, pool.AsyncNullConnectionPool])
+@pytest.fixture(params=["AsyncConnectionPool", "AsyncNullConnectionPool"])
 def pool_cls(request):
-    return request.param
+    return getattr(pool, request.param)
 
 
 async def test_defaults(pool_cls, dsn):
@@ -179,7 +181,7 @@ async def test_queue(pool_cls, dsn):
         t1 = time()
         results.append((n, t1 - t0, pid))
 
-    results: List[Tuple[int, float, int]] = []
+    results: list[tuple[int, float, int]] = []
     async with pool_cls(dsn, min_size=min_size(pool_cls, 2), max_size=2) as p:
         await p.wait()
         ts = [spawn(worker, args=(i,)) for i in range(6)]
@@ -190,7 +192,7 @@ async def test_queue(pool_cls, dsn):
     for got, want in zip(times, want_times):
         assert got == pytest.approx(want, 0.2), times
 
-    assert len(set(r[2] for r in results)) == 2, results
+    assert len({r[2] for r in results}) == 2, results
 
 
 @pytest.mark.slow
@@ -206,8 +208,8 @@ async def test_queue_size(pool_cls, dsn):
         else:
             success.append(True)
 
-    errors: List[Exception] = []
-    success: List[bool] = []
+    errors: list[Exception] = []
+    success: list[bool] = []
 
     async with pool_cls(
         dsn, min_size=min_size(pool_cls), max_size=1, max_waiting=3
@@ -245,8 +247,8 @@ async def test_queue_timeout(pool_cls, dsn):
             t1 = time()
             results.append((n, t1 - t0, pid))
 
-    results: List[Tuple[int, float, int]] = []
-    errors: List[Tuple[int, float, Exception]] = []
+    results: list[tuple[int, float, int]] = []
+    errors: list[tuple[int, float, Exception]] = []
 
     async with pool_cls(
         dsn, min_size=min_size(pool_cls, 2), max_size=2, timeout=0.1
@@ -273,7 +275,7 @@ async def test_dead_client(pool_cls, dsn):
                 raise
 
     async with pool_cls(dsn, min_size=min_size(pool_cls, 2), max_size=2) as p:
-        results: List[int] = []
+        results: list[int] = []
         ts = [
             spawn(worker, args=(i, timeout))
             for i, timeout in enumerate([0.4, 0.4, 0.1, 0.4, 0.4])
@@ -281,7 +283,7 @@ async def test_dead_client(pool_cls, dsn):
         await gather(*ts)
 
         await asleep(0.2)
-        assert set(results) == set([0, 1, 3, 4])
+        assert set(results) == {0, 1, 3, 4}
         if pool_cls is pool.AsyncConnectionPool:
             assert len(p._pool) == 2  # no connection was lost
 
@@ -304,8 +306,8 @@ async def test_queue_timeout_override(pool_cls, dsn):
             t1 = time()
             results.append((n, t1 - t0, pid))
 
-    results: List[Tuple[int, float, int]] = []
-    errors: List[Tuple[int, float, Exception]] = []
+    results: list[tuple[int, float, int]] = []
+    errors: list[tuple[int, float, Exception]] = []
 
     async with pool_cls(
         dsn, min_size=min_size(pool_cls, 2), max_size=2, timeout=0.1
@@ -421,7 +423,7 @@ async def test_closed_queue(pool_cls, dsn):
 
     async with pool_cls(dsn, min_size=min_size(pool_cls), max_size=1) as p:
         await p.wait()
-        success: List[str] = []
+        success: list[str] = []
 
         t1 = spawn(w1)
         # Wait until w1 has received a connection

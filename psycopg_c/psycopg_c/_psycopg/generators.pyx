@@ -6,10 +6,10 @@ C implementation of generators for the communication protocols with the libpq
 
 from cpython.object cimport PyObject_CallFunctionObjArgs
 
-from typing import List
+from time import monotonic
 
 from psycopg import errors as e
-from psycopg.pq import abc, error_message
+from psycopg.pq import abc
 from psycopg.abc import PipelineCommand, PQGen
 from psycopg._enums import Wait, Ready
 from psycopg._compat import Deque
@@ -27,37 +27,47 @@ cdef int READY_R = Ready.R
 cdef int READY_W = Ready.W
 cdef int READY_RW = Ready.RW
 
-def connect(conninfo: str) -> PQGenConn[abc.PGconn]:
+def connect(conninfo: str, *, timeout: float = 0.0) -> PQGenConn[abc.PGconn]:
     """
     Generator to create a database connection without blocking.
-
     """
     cdef pq.PGconn conn = pq.PGconn.connect_start(conninfo.encode())
     cdef libpq.PGconn *pgconn_ptr = conn._pgconn_ptr
     cdef int conn_status = libpq.PQstatus(pgconn_ptr)
     cdef int poll_status
+    cdef object wait, ready
+    cdef float deadline = 0.0
+
+    if timeout:
+        deadline = monotonic() + timeout
 
     while True:
         if conn_status == libpq.CONNECTION_BAD:
             encoding = conninfo_encoding(conninfo)
             raise e.OperationalError(
-                f"connection is bad: {error_message(conn, encoding=encoding)}",
+                f"connection is bad: {conn.get_error_message(encoding)}",
                 pgconn=conn
             )
 
         with nogil:
             poll_status = libpq.PQconnectPoll(pgconn_ptr)
 
-        if poll_status == libpq.PGRES_POLLING_OK:
+        if poll_status == libpq.PGRES_POLLING_READING \
+        or poll_status == libpq.PGRES_POLLING_WRITING:
+            wait = WAIT_R if poll_status == libpq.PGRES_POLLING_READING else WAIT_W
+            while True:
+                ready = yield (libpq.PQsocket(pgconn_ptr), wait)
+                if deadline and monotonic() > deadline:
+                    raise e.ConnectionTimeout("connection timeout expired")
+                if ready:
+                    break
+
+        elif poll_status == libpq.PGRES_POLLING_OK:
             break
-        elif poll_status == libpq.PGRES_POLLING_READING:
-            yield (libpq.PQsocket(pgconn_ptr), WAIT_R)
-        elif poll_status == libpq.PGRES_POLLING_WRITING:
-            yield (libpq.PQsocket(pgconn_ptr), WAIT_W)
         elif poll_status == libpq.PGRES_POLLING_FAILED:
             encoding = conninfo_encoding(conninfo)
             raise e.OperationalError(
-                f"connection failed: {error_message(conn, encoding=encoding)}",
+                f"connection failed: {conn.get_error_message(encoding)}",
                 pgconn=e.finish_pgconn(conn),
             )
         else:
@@ -70,7 +80,34 @@ def connect(conninfo: str) -> PQGenConn[abc.PGconn]:
     return conn
 
 
-def execute(pq.PGconn pgconn) -> PQGen[List[abc.PGresult]]:
+def cancel(pq.PGcancelConn cancel_conn, *, timeout: float = 0.0) -> PQGenConn[None]:
+    cdef libpq.PGcancelConn *pgcancelconn_ptr = cancel_conn.pgcancelconn_ptr
+    cdef int status
+    cdef float deadline = 0.0
+
+    if timeout:
+        deadline = monotonic() + timeout
+
+    while True:
+        if deadline and monotonic() > deadline:
+            raise e.CancellationTimeout("cancellation timeout expired")
+        with nogil:
+            status = libpq.PQcancelPoll(pgcancelconn_ptr)
+        if status == libpq.PGRES_POLLING_OK:
+            break
+        elif status == libpq.PGRES_POLLING_READING:
+            yield libpq.PQcancelSocket(pgcancelconn_ptr), WAIT_R
+        elif status == libpq.PGRES_POLLING_WRITING:
+            yield libpq.PQcancelSocket(pgcancelconn_ptr), WAIT_W
+        elif status == libpq.PGRES_POLLING_FAILED:
+            raise e.OperationalError(
+                f"cancellation failed: {cancel_conn.get_error_message()}"
+            )
+        else:
+            raise e.InternalError(f"unexpected poll status: {status}")
+
+
+def execute(pq.PGconn pgconn) -> PQGen[list[abc.PGresult]]:
     """
     Generator sending a query and returning results without blocking.
 
@@ -117,10 +154,10 @@ def send(pq.PGconn pgconn) -> PQGen[None]:
                 cires = libpq.PQconsumeInput(pgconn_ptr)
             if 1 != cires:
                 raise e.OperationalError(
-                    f"consuming input failed: {error_message(pgconn)}")
+                    f"consuming input failed: {pgconn.get_error_message()}")
 
 
-def fetch_many(pq.PGconn pgconn) -> PQGen[List[PGresult]]:
+def fetch_many(pq.PGconn pgconn) -> PQGen[list[PGresult]]:
     """
     Generator retrieving results from the database without blocking.
 
@@ -160,7 +197,7 @@ def fetch_many(pq.PGconn pgconn) -> PQGen[List[PGresult]]:
     return results
 
 
-def fetch(pq.PGconn pgconn) -> PQGen[Optional[PGresult]]:
+def fetch(pq.PGconn pgconn) -> PQGen[PGresult | None]:
     """
     Generator retrieving a single result from the database without blocking.
 
@@ -190,7 +227,7 @@ def fetch(pq.PGconn pgconn) -> PQGen[Optional[PGresult]]:
 
             if 1 != cires:
                 raise e.OperationalError(
-                    f"consuming input failed: {error_message(pgconn)}")
+                    f"consuming input failed: {pgconn.get_error_message()}")
             if not ibres:
                 break
             while True:
@@ -209,7 +246,7 @@ def fetch(pq.PGconn pgconn) -> PQGen[Optional[PGresult]]:
 
 def pipeline_communicate(
     pq.PGconn pgconn, commands: Deque[PipelineCommand]
-) -> PQGen[List[List[PGresult]]]:
+) -> PQGen[list[list[PGresult]]]:
     """Generator to send queries from a connection in pipeline mode while also
     receiving results.
 
@@ -235,11 +272,11 @@ def pipeline_communicate(
                 cires = libpq.PQconsumeInput(pgconn_ptr)
             if 1 != cires:
                 raise e.OperationalError(
-                    f"consuming input failed: {error_message(pgconn)}")
+                    f"consuming input failed: {pgconn.get_error_message()}")
 
             _consume_notifies(pgconn)
 
-            res: List[PGresult] = []
+            res: list[PGresult] = []
             while True:
                 with nogil:
                     ibres = libpq.PQisBusy(pgconn_ptr)

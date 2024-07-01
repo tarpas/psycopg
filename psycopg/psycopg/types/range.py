@@ -4,9 +4,10 @@ Support for range types adaptation.
 
 # Copyright (C) 2020 The Psycopg Team
 
+from __future__ import annotations
+
 import re
-from typing import Any, Callable, Dict, Generic, List, Optional, Type, Tuple
-from typing import cast, TYPE_CHECKING
+from typing import Any, Generic, cast, TYPE_CHECKING
 from decimal import Decimal
 from datetime import date, datetime
 
@@ -15,7 +16,7 @@ from .. import _oids
 from .. import errors as e
 from .. import postgres
 from ..pq import Format
-from ..abc import AdaptContext, Buffer, Dumper, DumperKey, Query
+from ..abc import AdaptContext, Buffer, Dumper, DumperKey, DumpFunc, LoadFunc, Query
 from ..adapt import RecursiveDumper, RecursiveLoader, PyFormat
 from .._oids import INVALID_OID, TEXT_OID
 from .._compat import cache, TypeVar
@@ -52,7 +53,7 @@ class RangeInfo(TypeInfo):
         self.subtype_oid = subtype_oid
 
     @classmethod
-    def _get_info_query(cls, conn: "BaseConnection[Any]") -> Query:
+    def _get_info_query(cls, conn: BaseConnection[Any]) -> Query:
         return sql.SQL(
             """\
 SELECT t.typname AS name, t.oid AS oid, t.typarray AS array_oid,
@@ -84,8 +85,8 @@ class Range(Generic[T]):
 
     def __init__(
         self,
-        lower: Optional[T] = None,
-        upper: Optional[T] = None,
+        lower: T | None = None,
+        upper: T | None = None,
         bounds: str = "[)",
         empty: bool = False,
     ):
@@ -129,12 +130,12 @@ class Range(Generic[T]):
         return "".join(items)
 
     @property
-    def lower(self) -> Optional[T]:
+    def lower(self) -> T | None:
         """The lower bound of the range. `!None` if empty or unbound."""
         return self._lower
 
     @property
-    def upper(self) -> Optional[T]:
+    def upper(self) -> T | None:
         """The upper bound of the range. `!None` if empty or unbound."""
         return self._upper
 
@@ -246,12 +247,12 @@ class Range(Generic[T]):
     def __ge__(self, other: Any) -> bool:
         return self == other or self > other  # type: ignore
 
-    def __getstate__(self) -> Dict[str, Any]:
+    def __getstate__(self) -> dict[str, Any]:
         return {
             slot: getattr(self, slot) for slot in self.__slots__ if hasattr(self, slot)
         }
 
-    def __setstate__(self, state: Dict[str, Any]) -> None:
+    def __setstate__(self, state: dict[str, Any]) -> None:
         for slot, value in state.items():
             setattr(self, slot, value)
 
@@ -285,9 +286,9 @@ class TimestamptzRange(Range[datetime]):
 
 
 class BaseRangeDumper(RecursiveDumper):
-    def __init__(self, cls: type, context: Optional[AdaptContext] = None):
+    def __init__(self, cls: type, context: AdaptContext | None = None):
         super().__init__(cls, context)
-        self.sub_dumper: Optional[Dumper] = None
+        self.sub_dumper: Dumper | None = None
         self._adapt_format = PyFormat.from_pq(self.format)
 
     def get_key(self, obj: Range[Any], format: PyFormat) -> DumperKey:
@@ -302,14 +303,14 @@ class BaseRangeDumper(RecursiveDumper):
         else:
             return (self.cls,)
 
-    def upgrade(self, obj: Range[Any], format: PyFormat) -> "BaseRangeDumper":
+    def upgrade(self, obj: Range[Any], format: PyFormat) -> BaseRangeDumper:
         # If we are a subclass whose oid is specified we don't need upgrade
         if self.cls is not Range:
             return self
 
         item = self._get_item(obj)
         if item is None:
-            return RangeDumper(self.cls)
+            return self
 
         dumper: BaseRangeDumper
         if type(item) is int:
@@ -354,7 +355,7 @@ class RangeDumper(BaseRangeDumper):
     The dumper can upgrade to one specific for a different range type.
     """
 
-    def dump(self, obj: Range[Any]) -> Buffer:
+    def dump(self, obj: Range[Any]) -> Buffer | None:
         item = self._get_item(obj)
         if item is not None:
             dump = self._tx.get_dumper(item, self._adapt_format).dump
@@ -364,15 +365,17 @@ class RangeDumper(BaseRangeDumper):
         return dump_range_text(obj, dump)
 
 
-def dump_range_text(obj: Range[Any], dump: Callable[[Any], Buffer]) -> Buffer:
+def dump_range_text(obj: Range[Any], dump: DumpFunc) -> Buffer:
     if obj.isempty:
         return b"empty"
 
-    parts: List[Buffer] = [b"[" if obj.lower_inc else b"("]
+    parts: list[Buffer] = [b"[" if obj.lower_inc else b"("]
 
     def dump_item(item: Any) -> Buffer:
         ad = dump(item)
-        if not ad:
+        if ad is None:
+            return b""
+        elif not ad:
             return b'""'
         elif _re_needs_quotes.search(ad):
             return b'"' + _re_esc.sub(rb"\1\1", ad) + b'"'
@@ -399,7 +402,7 @@ _re_esc = re.compile(rb"([\\\"])")
 class RangeBinaryDumper(BaseRangeDumper):
     format = Format.BINARY
 
-    def dump(self, obj: Range[Any]) -> Buffer:
+    def dump(self, obj: Range[Any]) -> Buffer | None:
         item = self._get_item(obj)
         if item is not None:
             dump = self._tx.get_dumper(item, self._adapt_format).dump
@@ -409,7 +412,7 @@ class RangeBinaryDumper(BaseRangeDumper):
         return dump_range_binary(obj, dump)
 
 
-def dump_range_binary(obj: Range[Any], dump: Callable[[Any], Buffer]) -> Buffer:
+def dump_range_binary(obj: Range[Any], dump: DumpFunc) -> Buffer:
     if not obj:
         return _EMPTY_HEAD
 
@@ -423,15 +426,21 @@ def dump_range_binary(obj: Range[Any], dump: Callable[[Any], Buffer]) -> Buffer:
 
     if obj.lower is not None:
         data = dump(obj.lower)
-        out += pack_len(len(data))
-        out += data
+        if data is not None:
+            out += pack_len(len(data))
+            out += data
+        else:
+            head |= RANGE_LB_INF
     else:
         head |= RANGE_LB_INF
 
     if obj.upper is not None:
         data = dump(obj.upper)
-        out += pack_len(len(data))
-        out += data
+        if data is not None:
+            out += pack_len(len(data))
+            out += data
+        else:
+            head |= RANGE_UB_INF
     else:
         head |= RANGE_UB_INF
 
@@ -451,7 +460,7 @@ class BaseRangeLoader(RecursiveLoader, Generic[T]):
 
     subtype_oid: int
 
-    def __init__(self, oid: int, context: Optional[AdaptContext] = None):
+    def __init__(self, oid: int, context: AdaptContext | None = None):
         super().__init__(oid, context)
         self._load = self._tx.get_loader(self.subtype_oid, format=self.format).load
 
@@ -461,9 +470,7 @@ class RangeLoader(BaseRangeLoader[T]):
         return load_range_text(data, self._load)[0]
 
 
-def load_range_text(
-    data: Buffer, load: Callable[[Buffer], Any]
-) -> Tuple[Range[Any], int]:
+def load_range_text(data: Buffer, load: LoadFunc) -> tuple[Range[Any], int]:
     if data == b"empty":
         return Range(empty=True), 5
 
@@ -523,7 +530,7 @@ class RangeBinaryLoader(BaseRangeLoader[T]):
         return load_range_binary(data, self._load)
 
 
-def load_range_binary(data: Buffer, load: Callable[[Buffer], Any]) -> Range[Any]:
+def load_range_binary(data: Buffer, load: LoadFunc) -> Range[Any]:
     head = data[0]
     if head & RANGE_EMPTY:
         return Range(empty=True)
@@ -551,7 +558,7 @@ def load_range_binary(data: Buffer, load: Callable[[Buffer], Any]) -> Range[Any]
     return Range(min, max, lb + ub)
 
 
-def register_range(info: RangeInfo, context: Optional[AdaptContext] = None) -> None:
+def register_range(info: RangeInfo, context: AdaptContext | None = None) -> None:
     """Register the adapters to load and dump a range type.
 
     :param info: The object with the information about the range to register.
@@ -579,7 +586,7 @@ def register_range(info: RangeInfo, context: Optional[AdaptContext] = None) -> N
     adapters = context.adapters if context else postgres.adapters
 
     # generate and register a customized text loader
-    loader: Type[BaseRangeLoader[Any]]
+    loader: type[BaseRangeLoader[Any]]
     loader = _make_loader(info.name, info.subtype_oid)
     adapters.register_loader(info.oid, loader)
 
@@ -593,12 +600,12 @@ def register_range(info: RangeInfo, context: Optional[AdaptContext] = None) -> N
 
 
 @cache
-def _make_loader(name: str, oid: int) -> Type[RangeLoader[Any]]:
+def _make_loader(name: str, oid: int) -> type[RangeLoader[Any]]:
     return type(f"{name.title()}Loader", (RangeLoader,), {"subtype_oid": oid})
 
 
 @cache
-def _make_binary_loader(name: str, oid: int) -> Type[RangeBinaryLoader[Any]]:
+def _make_binary_loader(name: str, oid: int) -> type[RangeBinaryLoader[Any]]:
     return type(
         f"{name.title()}BinaryLoader", (RangeBinaryLoader,), {"subtype_oid": oid}
     )

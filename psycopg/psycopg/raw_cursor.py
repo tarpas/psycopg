@@ -4,14 +4,16 @@ psycopg raw queries cursors
 
 # Copyright (C) 2023 The Psycopg Team
 
-from typing import Optional, TYPE_CHECKING
+from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from .abc import ConnectionType, Query, Params
 from .sql import Composable
 from .rows import Row
 from ._enums import PyFormat
 from .cursor import Cursor
 from .cursor_async import AsyncCursor
+from .server_cursor import ServerCursor, AsyncServerCursor
 from ._queries import PostgresQuery
 from ._cursor_base import BaseCursor
 
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
 
 
 class PostgresRawQuery(PostgresQuery):
-    def convert(self, query: Query, vars: Optional[Params]) -> None:
+    def convert(self, query: Query, vars: Params | None) -> None:
         if isinstance(query, str):
             bquery = query.encode(self._encoding)
         elif isinstance(query, Composable):
@@ -34,7 +36,7 @@ class PostgresRawQuery(PostgresQuery):
         self._want_formats = self._order = None
         self.dump(vars)
 
-    def dump(self, vars: Optional[Params]) -> None:
+    def dump(self, vars: Params | None) -> None:
         if vars is not None:
             if not PostgresQuery.is_params_sequence(vars):
                 raise TypeError("raw queries require a sequence of parameters")
@@ -58,4 +60,14 @@ class RawCursor(RawCursorMixin["Connection[Any]", Row], Cursor[Row]):
 
 
 class AsyncRawCursor(RawCursorMixin["AsyncConnection[Any]", Row], AsyncCursor[Row]):
+    __module__ = "psycopg"
+
+
+class RawServerCursor(RawCursorMixin["Connection[Any]", Row], ServerCursor[Row]):
+    __module__ = "psycopg"
+
+
+class AsyncRawServerCursor(
+    RawCursorMixin["AsyncConnection[Any]", Row], AsyncServerCursor[Row]
+):
     __module__ = "psycopg"

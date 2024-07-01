@@ -9,14 +9,13 @@ from __future__ import annotations
 import logging
 from time import monotonic
 from types import TracebackType
-from typing import Any, AsyncGenerator, AsyncIterator, List, Optional
-from typing import Type, Union, cast, overload, TYPE_CHECKING
+from typing import Any, AsyncGenerator, AsyncIterator, cast, overload, TYPE_CHECKING
 from contextlib import asynccontextmanager
 
 from . import pq
 from . import errors as e
 from . import waiting
-from .abc import AdaptContext, ConnDict, ConnParam, Params, PQGen, PQGenConn, Query, RV
+from .abc import AdaptContext, ConnDict, ConnParam, Params, PQGen, Query, RV
 from ._tpc import Xid
 from .rows import Row, AsyncRowFactory, tuple_row, args_row
 from .adapt import AdaptersMap
@@ -25,10 +24,10 @@ from ._compat import Self
 from .conninfo import make_conninfo, conninfo_to_dict
 from .conninfo import conninfo_attempts_async, timeout_from_conninfo
 from ._pipeline import AsyncPipeline
-from ._encodings import pgconn_encoding
 from .generators import notifies
 from .transaction import AsyncTransaction
 from .cursor_async import AsyncCursor
+from ._capabilities import capabilities
 from .server_cursor import AsyncServerCursor
 from ._connection_base import BaseConnection, CursorRow, Notify
 
@@ -36,6 +35,7 @@ if True:  # ASYNC
     import sys
     import asyncio
     from asyncio import Lock
+    from ._compat import to_thread
 else:
     from threading import Lock
 
@@ -66,14 +66,14 @@ class AsyncConnection(BaseConnection[Row]):
 
     __module__ = "psycopg"
 
-    cursor_factory: Type[AsyncCursor[Row]]
-    server_cursor_factory: Type[AsyncServerCursor[Row]]
+    cursor_factory: type[AsyncCursor[Row]]
+    server_cursor_factory: type[AsyncServerCursor[Row]]
     row_factory: AsyncRowFactory[Row]
-    _pipeline: Optional[AsyncPipeline]
+    _pipeline: AsyncPipeline | None
 
     def __init__(
         self,
-        pgconn: "PGconn",
+        pgconn: PGconn,
         row_factory: AsyncRowFactory[Row] = cast(AsyncRowFactory[Row], tuple_row),
     ):
         super().__init__(pgconn)
@@ -88,10 +88,10 @@ class AsyncConnection(BaseConnection[Row]):
         conninfo: str = "",
         *,
         autocommit: bool = False,
-        prepare_threshold: Optional[int] = 5,
-        context: Optional[AdaptContext] = None,
-        row_factory: Optional[AsyncRowFactory[Row]] = None,
-        cursor_factory: Optional[Type[AsyncCursor[Row]]] = None,
+        prepare_threshold: int | None = 5,
+        context: AdaptContext | None = None,
+        row_factory: AsyncRowFactory[Row] | None = None,
+        cursor_factory: type[AsyncCursor[Row]] | None = None,
         **kwargs: ConnParam,
     ) -> Self:
         """
@@ -115,8 +115,8 @@ class AsyncConnection(BaseConnection[Row]):
         for attempt in attempts:
             try:
                 conninfo = make_conninfo("", **attempt)
-                rv = await cls._wait_conn(cls._connect_gen(conninfo), timeout=timeout)
-                break
+                gen = cls._connect_gen(conninfo, timeout=timeout)
+                rv = await waiting.wait_conn_async(gen, interval=_WAIT_INTERVAL)
             except e._NO_TRACEBACK as ex:
                 if len(attempts) > 1:
                     logger.debug(
@@ -127,6 +127,8 @@ class AsyncConnection(BaseConnection[Row]):
                         str(ex),
                     )
                 last_ex = ex
+            else:
+                break
 
         if not rv:
             assert last_ex
@@ -147,9 +149,9 @@ class AsyncConnection(BaseConnection[Row]):
 
     async def __aexit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
     ) -> None:
         if self.closed:
             return
@@ -197,7 +199,7 @@ class AsyncConnection(BaseConnection[Row]):
         name: str,
         *,
         binary: bool = False,
-        scrollable: Optional[bool] = None,
+        scrollable: bool | None = None,
         withhold: bool = False,
     ) -> AsyncServerCursor[Row]: ...
 
@@ -208,7 +210,7 @@ class AsyncConnection(BaseConnection[Row]):
         *,
         binary: bool = False,
         row_factory: AsyncRowFactory[CursorRow],
-        scrollable: Optional[bool] = None,
+        scrollable: bool | None = None,
         withhold: bool = False,
     ) -> AsyncServerCursor[CursorRow]: ...
 
@@ -217,10 +219,10 @@ class AsyncConnection(BaseConnection[Row]):
         name: str = "",
         *,
         binary: bool = False,
-        row_factory: Optional[AsyncRowFactory[Any]] = None,
-        scrollable: Optional[bool] = None,
+        row_factory: AsyncRowFactory[Any] | None = None,
+        scrollable: bool | None = None,
         withhold: bool = False,
-    ) -> Union[AsyncCursor[Any], AsyncServerCursor[Any]]:
+    ) -> AsyncCursor[Any] | AsyncServerCursor[Any]:
         """
         Return a new `AsyncCursor` to send commands and queries to the connection.
         """
@@ -229,7 +231,7 @@ class AsyncConnection(BaseConnection[Row]):
         if not row_factory:
             row_factory = self.row_factory
 
-        cur: Union[AsyncCursor[Any], AsyncServerCursor[Any]]
+        cur: AsyncCursor[Any] | AsyncServerCursor[Any]
         if name:
             cur = self.server_cursor_factory(
                 self,
@@ -249,9 +251,9 @@ class AsyncConnection(BaseConnection[Row]):
     async def execute(
         self,
         query: Query,
-        params: Optional[Params] = None,
+        params: Params | None = None,
         *,
-        prepare: Optional[bool] = None,
+        prepare: bool | None = None,
         binary: bool = False,
     ) -> AsyncCursor[Row]:
         """Execute a query and return a cursor to read its results."""
@@ -275,9 +277,44 @@ class AsyncConnection(BaseConnection[Row]):
         async with self.lock:
             await self.wait(self._rollback_gen())
 
+    async def cancel_safe(self, *, timeout: float = 30.0) -> None:
+        """Cancel the current operation on the connection.
+
+        :param timeout: raise a `~errors.CancellationTimeout` if the
+            cancellation request does not succeed within `timeout` seconds.
+
+        Note that a successful cancel attempt on the client is not a guarantee
+        that the server will successfully manage to cancel the operation.
+
+        This is a non-blocking version of `~Connection.cancel()` which
+        leverages a more secure and improved cancellation feature of the libpq,
+        which is only available from version 17.
+
+        If the underlying libpq is older than version 17, the method will fall
+        back to using the same implementation of `!cancel()`.
+        """
+        if not self._should_cancel():
+            return
+
+        if capabilities.has_cancel_safe():
+            await waiting.wait_conn_async(
+                self._cancel_gen(timeout=timeout), interval=_WAIT_INTERVAL
+            )
+        else:
+            if True:  # ASYNC
+                await to_thread(self.cancel)
+            else:
+                self.cancel()
+
+    async def _try_cancel(self, *, timeout: float = 5.0) -> None:
+        try:
+            await self.cancel_safe(timeout=timeout)
+        except Exception as ex:
+            logger.warning("query cancellation failed: %s", ex)
+
     @asynccontextmanager
     async def transaction(
-        self, savepoint_name: Optional[str] = None, force_rollback: bool = False
+        self, savepoint_name: str | None = None, force_rollback: bool = False
     ) -> AsyncIterator[AsyncTransaction]:
         """
         Start a context block with a new transaction or nested transaction.
@@ -297,7 +334,7 @@ class AsyncConnection(BaseConnection[Row]):
                 yield tx
 
     async def notifies(
-        self, *, timeout: Optional[float] = None, stop_after: Optional[int] = None
+        self, *, timeout: float | None = None, stop_after: int | None = None
     ) -> AsyncGenerator[Notify, None]:
         """
         Yield `Notify` objects as soon as they are received from the database.
@@ -309,43 +346,42 @@ class AsyncConnection(BaseConnection[Row]):
             notifications arrives in the same packet.
         """
         # Allow interrupting the wait with a signal by reducing a long timeout
-        # into shorter interval.
+        # into shorter intervals.
         if timeout is not None:
             deadline = monotonic() + timeout
-            timeout = min(timeout, _WAIT_INTERVAL)
+            interval = min(timeout, _WAIT_INTERVAL)
         else:
             deadline = None
-            timeout = _WAIT_INTERVAL
+            interval = _WAIT_INTERVAL
 
         nreceived = 0
 
-        while True:
-            # Collect notifications. Also get the connection encoding if any
-            # notification is received to makes sure that they are consistent.
-            try:
-                async with self.lock:
-                    ns = await self.wait(notifies(self.pgconn), timeout=timeout)
-                    if ns:
-                        enc = pgconn_encoding(self.pgconn)
-            except e._NO_TRACEBACK as ex:
-                raise ex.with_traceback(None)
+        async with self.lock:
+            enc = self.pgconn._encoding
+            while True:
+                try:
+                    ns = await self.wait(notifies(self.pgconn), interval=interval)
+                except e._NO_TRACEBACK as ex:
+                    raise ex.with_traceback(None)
 
-            # Emit the notifications received.
-            for pgn in ns:
-                n = Notify(pgn.relname.decode(enc), pgn.extra.decode(enc), pgn.be_pid)
-                yield n
-                nreceived += 1
+                # Emit the notifications received.
+                for pgn in ns:
+                    n = Notify(
+                        pgn.relname.decode(enc), pgn.extra.decode(enc), pgn.be_pid
+                    )
+                    yield n
+                    nreceived += 1
 
-            # Stop if we have received enough notifications.
-            if stop_after is not None and nreceived >= stop_after:
-                break
-
-            # Check the deadline after the loop to ensure that timeout=0
-            # polls at least once.
-            if deadline:
-                timeout = min(_WAIT_INTERVAL, deadline - monotonic())
-                if timeout < 0.0:
+                # Stop if we have received enough notifications.
+                if stop_after is not None and nreceived >= stop_after:
                     break
+
+                # Check the deadline after the loop to ensure that timeout=0
+                # polls at least once.
+                if deadline:
+                    interval = min(_WAIT_INTERVAL, deadline - monotonic())
+                    if interval < 0.0:
+                        break
 
     @asynccontextmanager
     async def pipeline(self) -> AsyncIterator[AsyncPipeline]:
@@ -367,9 +403,7 @@ class AsyncConnection(BaseConnection[Row]):
                     assert pipeline is self._pipeline
                     self._pipeline = None
 
-    async def wait(
-        self, gen: PQGen[RV], timeout: Optional[float] = _WAIT_INTERVAL
-    ) -> RV:
+    async def wait(self, gen: PQGen[RV], interval: float | None = _WAIT_INTERVAL) -> RV:
         """
         Consume a generator operating on the connection.
 
@@ -377,22 +411,17 @@ class AsyncConnection(BaseConnection[Row]):
         fd (i.e. not on connect and reset).
         """
         try:
-            return await waiting.wait_async(gen, self.pgconn.socket, timeout=timeout)
+            return await waiting.wait_async(gen, self.pgconn.socket, interval=interval)
         except _INTERRUPTED:
             if self.pgconn.transaction_status == ACTIVE:
                 # On Ctrl-C, try to cancel the query in the server, otherwise
                 # the connection will remain stuck in ACTIVE state.
-                self._try_cancel(self.pgconn)
+                await self._try_cancel(timeout=5.0)
                 try:
-                    await waiting.wait_async(gen, self.pgconn.socket, timeout=timeout)
+                    await waiting.wait_async(gen, self.pgconn.socket, interval=interval)
                 except e.QueryCanceled:
                     pass  # as expected
             raise
-
-    @classmethod
-    async def _wait_conn(cls, gen: PQGenConn[RV], timeout: Optional[int]) -> RV:
-        """Consume a connection generator."""
-        return await waiting.wait_conn_async(gen, timeout)
 
     def _set_autocommit(self, value: bool) -> None:
         if True:  # ASYNC
@@ -405,35 +434,35 @@ class AsyncConnection(BaseConnection[Row]):
         async with self.lock:
             await self.wait(self._set_autocommit_gen(value))
 
-    def _set_isolation_level(self, value: Optional[IsolationLevel]) -> None:
+    def _set_isolation_level(self, value: IsolationLevel | None) -> None:
         if True:  # ASYNC
             self._no_set_async("isolation_level")
         else:
             self.set_isolation_level(value)
 
-    async def set_isolation_level(self, value: Optional[IsolationLevel]) -> None:
+    async def set_isolation_level(self, value: IsolationLevel | None) -> None:
         """Method version of the `~Connection.isolation_level` setter."""
         async with self.lock:
             await self.wait(self._set_isolation_level_gen(value))
 
-    def _set_read_only(self, value: Optional[bool]) -> None:
+    def _set_read_only(self, value: bool | None) -> None:
         if True:  # ASYNC
             self._no_set_async("read_only")
         else:
             self.set_read_only(value)
 
-    async def set_read_only(self, value: Optional[bool]) -> None:
+    async def set_read_only(self, value: bool | None) -> None:
         """Method version of the `~Connection.read_only` setter."""
         async with self.lock:
             await self.wait(self._set_read_only_gen(value))
 
-    def _set_deferrable(self, value: Optional[bool]) -> None:
+    def _set_deferrable(self, value: bool | None) -> None:
         if True:  # ASYNC
             self._no_set_async("deferrable")
         else:
             self.set_deferrable(value)
 
-    async def set_deferrable(self, value: Optional[bool]) -> None:
+    async def set_deferrable(self, value: bool | None) -> None:
         """Method version of the `~Connection.deferrable` setter."""
         async with self.lock:
             await self.wait(self._set_deferrable_gen(value))
@@ -446,7 +475,7 @@ class AsyncConnection(BaseConnection[Row]):
                 f" please use 'await .set_{attribute}()' instead."
             )
 
-    async def tpc_begin(self, xid: Union[Xid, str]) -> None:
+    async def tpc_begin(self, xid: Xid | str) -> None:
         """
         Begin a TPC transaction with the given transaction ID `!xid`.
         """
@@ -463,21 +492,21 @@ class AsyncConnection(BaseConnection[Row]):
         except e.ObjectNotInPrerequisiteState as ex:
             raise e.NotSupportedError(str(ex)) from None
 
-    async def tpc_commit(self, xid: Union[Xid, str, None] = None) -> None:
+    async def tpc_commit(self, xid: Xid | str | None = None) -> None:
         """
         Commit a prepared two-phase transaction.
         """
         async with self.lock:
             await self.wait(self._tpc_finish_gen("COMMIT", xid))
 
-    async def tpc_rollback(self, xid: Union[Xid, str, None] = None) -> None:
+    async def tpc_rollback(self, xid: Xid | str | None = None) -> None:
         """
         Roll back a prepared two-phase transaction.
         """
         async with self.lock:
             await self.wait(self._tpc_finish_gen("ROLLBACK", xid))
 
-    async def tpc_recover(self) -> List[Xid]:
+    async def tpc_recover(self) -> list[Xid]:
         self._check_tpc()
         status = self.info.transaction_status
         async with self.cursor(row_factory=args_row(Xid._from_record)) as cur:

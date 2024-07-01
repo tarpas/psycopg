@@ -11,14 +11,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from types import TracebackType
-from typing import Any, Iterator, Type, Tuple, Sequence, TYPE_CHECKING
+from typing import Any, Iterator, Sequence, TYPE_CHECKING
 
 from . import pq
 from . import errors as e
 from ._compat import Self
-from ._copy_base import BaseCopy, MAX_BUFFER_SIZE, QUEUE_SIZE
+from ._copy_base import BaseCopy, MAX_BUFFER_SIZE, QUEUE_SIZE, PREFER_FLUSH
 from .generators import copy_to, copy_end
-from ._encodings import pgconn_encoding
 from ._acompat import spawn, gather, Queue, Worker
 
 if TYPE_CHECKING:
@@ -28,6 +27,8 @@ if TYPE_CHECKING:
 
 COPY_IN = pq.ExecStatus.COPY_IN
 COPY_OUT = pq.ExecStatus.COPY_OUT
+
+ACTIVE = pq.TransactionStatus.ACTIVE
 
 
 class Copy(BaseCopy["Connection[Any]"]):
@@ -69,7 +70,7 @@ class Copy(BaseCopy["Connection[Any]"]):
 
     def __exit__(
         self,
-        exc_type: Type[BaseException] | None,
+        exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
@@ -93,7 +94,7 @@ class Copy(BaseCopy["Connection[Any]"]):
         """
         return self.connection.wait(self._read_gen())
 
-    def rows(self) -> Iterator[Tuple[Any, ...]]:
+    def rows(self) -> Iterator[tuple[Any, ...]]:
         """
         Iterate on the result of a :sql:`COPY TO` operation record by record.
 
@@ -106,7 +107,7 @@ class Copy(BaseCopy["Connection[Any]"]):
                 break
             yield record
 
-    def read_row(self) -> Tuple[Any, ...] | None:
+    def read_row(self) -> tuple[Any, ...] | None:
         """
         Read a parsed row of data from a table after a :sql:`COPY TO` operation.
 
@@ -148,7 +149,18 @@ class Copy(BaseCopy["Connection[Any]"]):
             self.writer.finish(exc)
             self._finished = True
         else:
-            self.connection.wait(self._end_copy_out_gen(exc))
+            if not exc:
+                return
+            if self._pgconn.transaction_status != ACTIVE:
+                # The server has already finished to send copy data. The connection
+                # is already in a good state.
+                return
+            # Throw a cancel to the server, then consume the rest of the copy data
+            # (which might or might not have been already transferred entirely to
+            # the client, so we won't necessary see the exception associated with
+            # canceling).
+            self.connection._try_cancel()
+            self.connection.wait(self._end_copy_out_gen())
 
 
 class Writer(ABC):
@@ -186,20 +198,22 @@ class LibpqWriter(Writer):
         if len(data) <= MAX_BUFFER_SIZE:
             # Most used path: we don't need to split the buffer in smaller
             # bits, so don't make a copy.
-            self.connection.wait(copy_to(self._pgconn, data))
+            self.connection.wait(copy_to(self._pgconn, data, flush=PREFER_FLUSH))
         else:
             # Copy a buffer too large in chunks to avoid causing a memory
             # error in the libpq, which may cause an infinite loop (#255).
             for i in range(0, len(data), MAX_BUFFER_SIZE):
                 self.connection.wait(
-                    copy_to(self._pgconn, data[i : i + MAX_BUFFER_SIZE])
+                    copy_to(
+                        self._pgconn, data[i : i + MAX_BUFFER_SIZE], flush=PREFER_FLUSH
+                    )
                 )
 
     def finish(self, exc: BaseException | None = None) -> None:
         bmsg: bytes | None
         if exc:
             msg = f"error from Python: {type(exc).__qualname__} - {exc}"
-            bmsg = msg.encode(pgconn_encoding(self._pgconn), "replace")
+            bmsg = msg.encode(self._pgconn._encoding, "replace")
         else:
             bmsg = None
 
@@ -246,7 +260,7 @@ class QueuedLibpqWriter(LibpqWriter):
                 data = self._queue.get()
                 if not data:
                     break
-                self.connection.wait(copy_to(self._pgconn, data))
+                self.connection.wait(copy_to(self._pgconn, data, flush=PREFER_FLUSH))
         except BaseException as ex:
             # Propagate the error to the main thread.
             self._worker_error = ex

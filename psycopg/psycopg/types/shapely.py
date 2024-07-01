@@ -2,7 +2,7 @@
 Adapters for PostGIS geometries
 """
 
-from typing import Optional, Type
+from __future__ import annotations
 
 from .. import postgres
 from ..abc import AdaptContext, Buffer
@@ -10,7 +10,6 @@ from ..adapt import Dumper, Loader
 from ..pq import Format
 from .._compat import cache
 from .._typeinfo import TypeInfo
-
 
 try:
     from shapely.wkb import loads, dumps
@@ -26,14 +25,14 @@ except ImportError:
 class GeometryBinaryLoader(Loader):
     format = Format.BINARY
 
-    def load(self, data: Buffer) -> "BaseGeometry":
+    def load(self, data: Buffer) -> BaseGeometry:
         if not isinstance(data, bytes):
             data = bytes(data)
         return loads(data)
 
 
 class GeometryLoader(Loader):
-    def load(self, data: Buffer) -> "BaseGeometry":
+    def load(self, data: Buffer) -> BaseGeometry:
         # it's a hex string in binary
         if isinstance(data, memoryview):
             data = bytes(data)
@@ -43,16 +42,16 @@ class GeometryLoader(Loader):
 class BaseGeometryBinaryDumper(Dumper):
     format = Format.BINARY
 
-    def dump(self, obj: "BaseGeometry") -> bytes:
+    def dump(self, obj: BaseGeometry) -> Buffer | None:
         return dumps(obj)  # type: ignore
 
 
 class BaseGeometryDumper(Dumper):
-    def dump(self, obj: "BaseGeometry") -> bytes:
+    def dump(self, obj: BaseGeometry) -> Buffer | None:
         return dumps(obj, hex=True).encode()  # type: ignore
 
 
-def register_shapely(info: TypeInfo, context: Optional[AdaptContext] = None) -> None:
+def register_shapely(info: TypeInfo, context: AdaptContext | None = None) -> None:
     """Register Shapely dumper and loaders."""
 
     # A friendly error warning instead of an AttributeError in case fetch()
@@ -75,7 +74,7 @@ def register_shapely(info: TypeInfo, context: Optional[AdaptContext] = None) -> 
 
 
 @cache
-def _make_dumper(oid_in: int) -> Type[BaseGeometryDumper]:
+def _make_dumper(oid_in: int) -> type[BaseGeometryDumper]:
     class GeometryDumper(BaseGeometryDumper):
         oid = oid_in
 
@@ -83,7 +82,7 @@ def _make_dumper(oid_in: int) -> Type[BaseGeometryDumper]:
 
 
 @cache
-def _make_binary_dumper(oid_in: int) -> Type[BaseGeometryBinaryDumper]:
+def _make_binary_dumper(oid_in: int) -> type[BaseGeometryBinaryDumper]:
     class GeometryBinaryDumper(BaseGeometryBinaryDumper):
         oid = oid_in
 

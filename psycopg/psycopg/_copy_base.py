@@ -7,10 +7,10 @@ psycopg copy support
 from __future__ import annotations
 
 import re
+import sys
 import struct
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Generic, List, Match
-from typing import Optional, Sequence, Tuple, Union, TYPE_CHECKING
+from typing import Any, Generic, Match, Sequence, TYPE_CHECKING
 
 from . import pq
 from . import adapt
@@ -18,13 +18,10 @@ from . import errors as e
 from .abc import Buffer, ConnectionType, PQGen, Transformer
 from .pq.misc import connection_summary
 from ._cmodule import _psycopg
-from ._encodings import pgconn_encoding
 from .generators import copy_from
 
 if TYPE_CHECKING:
     from ._cursor_base import BaseCursor
-    from .connection import Connection  # noqa: F401
-    from .connection_async import AsyncConnection  # noqa: F401
 
 PY_TEXT = adapt.PyFormat.TEXT
 PY_BINARY = adapt.PyFormat.BINARY
@@ -34,8 +31,6 @@ BINARY = pq.Format.BINARY
 
 COPY_IN = pq.ExecStatus.COPY_IN
 COPY_OUT = pq.ExecStatus.COPY_OUT
-
-ACTIVE = pq.TransactionStatus.ACTIVE
 
 # Size of data to accumulate before sending it down the network. We fill a
 # buffer this size field by field, and when it passes the threshold size
@@ -54,6 +49,10 @@ MAX_BUFFER_SIZE = 4 * BUFFER_SIZE
 # Max size of the write queue of buffers. More than that copy will block
 # Each buffer should be around BUFFER_SIZE size.
 QUEUE_SIZE = 1024
+
+# On certain systems, memmove seems particularly slow and flushing often is
+# more performing than accumulating a larger buffer. See #746 for details.
+PREFER_FLUSH = sys.platform == "darwin"
 
 
 class BaseCopy(Generic[ConnectionType]):
@@ -75,9 +74,9 @@ class BaseCopy(Generic[ConnectionType]):
 
     def __init__(
         self,
-        cursor: "BaseCursor[ConnectionType, Any]",
+        cursor: BaseCursor[ConnectionType, Any],
         *,
-        binary: Optional[bool] = None,
+        binary: bool | None = None,
     ):
         self.cursor = cursor
         self.connection = cursor.connection
@@ -101,7 +100,7 @@ class BaseCopy(Generic[ConnectionType]):
         if binary:
             self.formatter = BinaryFormatter(tx)
         else:
-            self.formatter = TextFormatter(tx, encoding=pgconn_encoding(self._pgconn))
+            self.formatter = TextFormatter(tx, encoding=self._pgconn._encoding)
 
         self._finished = False
 
@@ -114,7 +113,7 @@ class BaseCopy(Generic[ConnectionType]):
         if self._finished:
             raise TypeError("copy blocks can be used only once")
 
-    def set_types(self, types: Sequence[Union[int, str]]) -> None:
+    def set_types(self, types: Sequence[int | str]) -> None:
         """
         Set the types expected in a COPY operation.
 
@@ -162,7 +161,7 @@ class BaseCopy(Generic[ConnectionType]):
         self.cursor._rowcount = nrows if nrows is not None else -1
         return memoryview(b"")
 
-    def _read_row_gen(self) -> PQGen[Optional[Tuple[Any, ...]]]:
+    def _read_row_gen(self) -> PQGen[tuple[Any, ...] | None]:
         data = yield from self._read_gen()
         if not data:
             return None
@@ -176,20 +175,7 @@ class BaseCopy(Generic[ConnectionType]):
 
         return row
 
-    def _end_copy_out_gen(self, exc: Optional[BaseException]) -> PQGen[None]:
-        if not exc:
-            return
-
-        if self._pgconn.transaction_status != ACTIVE:
-            # The server has already finished to send copy data. The connection
-            # is already in a good state.
-            return
-
-        # Throw a cancel to the server, then consume the rest of the copy data
-        # (which might or might not have been already transferred entirely to
-        # the client, so we won't necessary see the exception associated with
-        # canceling).
-        self.connection.cancel()
+    def _end_copy_out_gen(self) -> PQGen[None]:
         try:
             while (yield from self._read_gen()):
                 pass
@@ -210,10 +196,10 @@ class Formatter(ABC):
         self._row_mode = False  # true if the user is using write_row()
 
     @abstractmethod
-    def parse_row(self, data: Buffer) -> Optional[Tuple[Any, ...]]: ...
+    def parse_row(self, data: Buffer) -> tuple[Any, ...] | None: ...
 
     @abstractmethod
-    def write(self, buffer: Union[Buffer, str]) -> Buffer: ...
+    def write(self, buffer: Buffer | str) -> Buffer: ...
 
     @abstractmethod
     def write_row(self, row: Sequence[Any]) -> Buffer: ...
@@ -229,13 +215,13 @@ class TextFormatter(Formatter):
         super().__init__(transformer)
         self._encoding = encoding
 
-    def parse_row(self, data: Buffer) -> Optional[Tuple[Any, ...]]:
+    def parse_row(self, data: Buffer) -> tuple[Any, ...] | None:
         if data:
             return parse_row_text(data, self.transformer)
         else:
             return None
 
-    def write(self, buffer: Union[Buffer, str]) -> Buffer:
+    def write(self, buffer: Buffer | str) -> Buffer:
         data = self._ensure_bytes(buffer)
         self._signature_sent = True
         return data
@@ -256,7 +242,7 @@ class TextFormatter(Formatter):
         buffer, self._write_buffer = self._write_buffer, bytearray()
         return buffer
 
-    def _ensure_bytes(self, data: Union[Buffer, str]) -> Buffer:
+    def _ensure_bytes(self, data: Buffer | str) -> Buffer:
         if isinstance(data, str):
             return data.encode(self._encoding)
         else:
@@ -273,7 +259,7 @@ class BinaryFormatter(Formatter):
         super().__init__(transformer)
         self._signature_sent = False
 
-    def parse_row(self, data: Buffer) -> Optional[Tuple[Any, ...]]:
+    def parse_row(self, data: Buffer) -> tuple[Any, ...] | None:
         if not self._signature_sent:
             if data[: len(_binary_signature)] != _binary_signature:
                 raise e.DataError(
@@ -287,7 +273,7 @@ class BinaryFormatter(Formatter):
 
         return parse_row_binary(data, self.transformer)
 
-    def write(self, buffer: Union[Buffer, str]) -> Buffer:
+    def write(self, buffer: Buffer | str) -> Buffer:
         data = self._ensure_bytes(buffer)
         self._signature_sent = True
         return data
@@ -327,7 +313,7 @@ class BinaryFormatter(Formatter):
         buffer, self._write_buffer = self._write_buffer, bytearray()
         return buffer
 
-    def _ensure_bytes(self, data: Union[Buffer, str]) -> Buffer:
+    def _ensure_bytes(self, data: Buffer | str) -> Buffer:
         if isinstance(data, str):
             raise TypeError("cannot copy str data in binary mode: use bytes instead")
         else:
@@ -338,7 +324,7 @@ class BinaryFormatter(Formatter):
 
 
 def _format_row_text(
-    row: Sequence[Any], tx: Transformer, out: Optional[bytearray] = None
+    row: Sequence[Any], tx: Transformer, out: bytearray | None = None
 ) -> bytearray:
     """Convert a row of objects to the data to send for copy."""
     if out is None:
@@ -358,7 +344,7 @@ def _format_row_text(
 
 
 def _format_row_binary(
-    row: Sequence[Any], tx: Transformer, out: Optional[bytearray] = None
+    row: Sequence[Any], tx: Transformer, out: bytearray | None = None
 ) -> bytearray:
     """Convert a row of objects to the data to send for binary copy."""
     if out is None:
@@ -376,7 +362,7 @@ def _format_row_binary(
     return out
 
 
-def _parse_row_text(data: Buffer, tx: Transformer) -> Tuple[Any, ...]:
+def _parse_row_text(data: Buffer, tx: Transformer) -> tuple[Any, ...]:
     if not isinstance(data, bytes):
         data = bytes(data)
     fields = data.split(b"\t")
@@ -385,8 +371,8 @@ def _parse_row_text(data: Buffer, tx: Transformer) -> Tuple[Any, ...]:
     return tx.load_sequence(row)
 
 
-def _parse_row_binary(data: Buffer, tx: Transformer) -> Tuple[Any, ...]:
-    row: List[Optional[Buffer]] = []
+def _parse_row_binary(data: Buffer, tx: Transformer) -> tuple[Any, ...]:
+    row: list[Buffer | None] = []
     nfields = _unpack_int2(data, 0)[0]
     pos = 2
     for i in range(nfields):
@@ -426,7 +412,7 @@ _dump_repl = {
 }
 
 
-def _dump_sub(m: Match[bytes], __map: Dict[bytes, bytes] = _dump_repl) -> bytes:
+def _dump_sub(m: Match[bytes], __map: dict[bytes, bytes] = _dump_repl) -> bytes:
     return __map[m.group(0)]
 
 
@@ -434,7 +420,7 @@ _load_re = re.compile(b"\\\\[btnvfr\\\\]")
 _load_repl = {v: k for k, v in _dump_repl.items()}
 
 
-def _load_sub(m: Match[bytes], __map: Dict[bytes, bytes] = _load_repl) -> bytes:
+def _load_sub(m: Match[bytes], __map: dict[bytes, bytes] = _load_repl) -> bytes:
     return __map[m.group(0)]
 
 

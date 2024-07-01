@@ -30,7 +30,7 @@ cdef class _BaseStrDumper(CDumper):
     cdef char *encoding
     cdef bytes _bytes_encoding  # needed to keep `encoding` alive
 
-    def __cinit__(self, cls, context: Optional[AdaptContext] = None):
+    def __cinit__(self, cls, context: AdaptContext | None = None):
 
         self.is_utf8 = 0
         self.encoding = "utf-8"
@@ -138,7 +138,7 @@ cdef class _TextLoader(CLoader):
     cdef char *encoding
     cdef bytes _bytes_encoding  # needed to keep `encoding` alive
 
-    def __cinit__(self, oid: int, context: Optional[AdaptContext] = None):
+    def __cinit__(self, oid: int, context: AdaptContext | None = None):
 
         self.is_utf8 = 0
         self.encoding = "utf-8"
@@ -215,7 +215,7 @@ cdef class BytesDumper(CDumper):
         libpq.PQfreemem(out)
         return len_out
 
-    def quote(self, obj):
+    def quote(self, obj) -> Buffer:
         cdef size_t len_out
         cdef unsigned char *out
         cdef char *ptr

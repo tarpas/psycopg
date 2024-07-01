@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
 from packaging.version import parse as ver  # noqa: F401  # used in skipif
@@ -252,11 +254,11 @@ async def test_reset_broken(dsn, caplog):
 
 @pytest.mark.slow
 @pytest.mark.skipif("ver(psycopg.__version__) < ver('3.0.8')")
-async def test_no_queue_timeout(deaf_port):
+async def test_no_queue_timeout(proxy):
     async with pool.AsyncNullConnectionPool(
-        kwargs={"host": "localhost", "port": deaf_port}
+        kwargs={"host": proxy.client_host, "port": proxy.client_port}
     ) as p:
-        with pytest.raises(pool.PoolTimeout):
+        with proxy.deaf_listen(), pytest.raises(pool.PoolTimeout):
             async with p.connection(timeout=1):
                 pass
 
@@ -408,7 +410,7 @@ async def test_bad_resize(dsn, min_size, max_size):
 @pytest.mark.timing
 @pytest.mark.crdb_skip("backend pid")
 async def test_max_lifetime(dsn):
-    pids: List[int] = []
+    pids: list[int] = []
 
     async def worker():
         async with p.connection() as conn:

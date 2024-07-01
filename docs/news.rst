@@ -7,25 +7,57 @@
 ``psycopg`` release notes
 =========================
 
-Future releases
+Current release
 ---------------
 
-Psycopg 3.2 (unreleased)
-^^^^^^^^^^^^^^^^^^^^^^^^
+Psycopg 3.2.1
+^^^^^^^^^^^^^
+
+- Fix packaging metadata breaking ``[c]``, ``[binary]`` dependencies
+  (:ticket:`#853`).
+
+
+Psycopg 3.2
+-----------
+
+.. rubric:: New top-level features
 
 - Add support for integer, floating point, boolean `NumPy scalar types`__
   (:ticket:`#332`).
 - Add `!timeout` and `!stop_after` parameters to `Connection.notifies()`
   (:ticket:`340`).
+- Allow dumpers to return `!None`, to be converted to NULL (:ticket:`#377`).
 - Add :ref:`raw-query-cursors` to execute queries using placeholders in
-  PostgreSQL format (`$1`, `$2`...) (:ticket:`#560`).
+  PostgreSQL format (`$1`, `$2`...) (:tickets:`#560, #839`).
+- Add `capabilities` object to :ref:`inspect the libpq capabilities
+  <capabilities>` (:ticket:`#772`).
 - Add `~rows.scalar_row` to return scalar values from a query (:ticket:`#723`).
-- Add `~Connection.set_autocommit()` on sync connections, and similar
-  transaction control methods available on the async connections.
-- Add support for libpq functions to close prepared statements and portals
-  introduced in libpq v17 (:ticket:`#603`).
+- Add `~Connection.cancel_safe()` for encrypted and non-blocking cancellation
+  when using libpq v17. Use such method internally to implement
+  `!KeyboardInterrupt` and `~cursor.copy` termination (:ticket:`#754`).
 - The `!context` parameter of `sql` objects `~sql.Composable.as_string()` and
   `~sql.Composable.as_bytes()` methods is now optional (:ticket:`#716`).
+- Add `~Connection.set_autocommit()` on sync connections, and similar
+  transaction control methods available on the async connections.
+- Add a `size` parameter to `~Cursor.stream()` to enable results retrieval in
+  chunks instead of row-by-row (:ticket:`#794`).
+
+.. rubric:: New libpq wrapper features
+
+- Add support for libpq functions to close prepared statements and portals
+  introduced in libpq v17 (:ticket:`#603`).
+- Add support for libpq encrypted and non-blocking query cancellation
+  functions introduced in libpq v17 (:ticket:`#754`).
+- Add support for libpq function to retrieve results in chunks introduced in
+  libpq v17 (:ticket:`#793`).
+- Add support for libpq function to change role passwords introduced in
+  libpq v17 (:ticket:`#818`).
+
+.. rubric:: Other changes
+
+- Drop support for Python 3.7.
+- Prepared statements are now :ref:`compatible with PgBouncer <pgbouncer>`.
+  (:ticket:`#589`).
 - Disable receiving more than one result on the same cursor in pipeline mode,
   to iterate through `~Cursor.nextset()`. The behaviour was different than
   in non-pipeline mode and not totally reliable (:ticket:`#604`).
@@ -35,14 +67,26 @@ Psycopg 3.2 (unreleased)
 .. __: https://numpy.org/doc/stable/reference/arrays.scalars.html#built-in-scalar-types
 
 
+Psycopg 3.1.20
+^^^^^^^^^^^^^^
+
+- Use the simple query protocol to execute COMMIT/ROLLBACK when possible.
+  This should make querying the PgBouncer admin database easier
+  (:ticket:`#820`).
+- Avoid unneeded escaping checks and memory over-allocation in text copy
+  (:ticket:`#829`).
+- Bundle binary package with OpenSSL 3.3.x (:ticket:`#847`).
+
+
 Psycopg 3.1.19
 ^^^^^^^^^^^^^^
 
+- Fix unaligned access undefined behaviour in C extension (:ticket:`#734`).
 - Fix excessive stripping of error message prefixes (:ticket:`#752`).
+- Allow to specify the ``connect_timeout`` connection parameter as float
+  (:ticket:`#796`).
+- Improve COPY performance on macOS (:ticket:`#745`).
 
-
-Current release
----------------
 
 Psycopg 3.1.18
 ^^^^^^^^^^^^^^
@@ -397,7 +441,7 @@ Psycopg 3.0.4
 
 - Allow to use the module with strict strings comparison (:ticket:`#147`).
 - Fix segfault on Python 3.6 running in ``-W error`` mode, related to
-  `!backport.zoneinfo` `ticket #109
+  `!backport.zoneinfo` (:ticket:`#109`).
   <https://github.com/pganssle/zoneinfo/issues/109>`__.
 - Build binary package with libpq versions not affected by `CVE-2021-23222
   <https://www.postgresql.org/support/security/CVE-2021-23222/>`__

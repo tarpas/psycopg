@@ -7,13 +7,13 @@ Tests common to psycopg.Cursor and its subclasses.
 
 import weakref
 import datetime as dt
-from typing import Any, List
+from typing import Any
 from packaging.version import parse as ver
 
 import pytest
 
 import psycopg
-from psycopg import sql, rows
+from psycopg import pq, sql, rows
 from psycopg.adapt import PyFormat
 from psycopg.types import TypeInfo
 
@@ -229,7 +229,7 @@ def test_execute_sequence(conn):
 def test_execute_empty_query(conn, query):
     cur = conn.cursor()
     cur.execute(query)
-    assert cur.pgresult.status == cur.ExecStatus.EMPTY_QUERY
+    assert cur.pgresult.status == pq.ExecStatus.EMPTY_QUERY
     with pytest.raises(psycopg.ProgrammingError):
         cur.fetchone()
 
@@ -484,7 +484,7 @@ def test_rownumber(conn):
     assert cur.rownumber == 2
     cur.fetchmany(10)
     assert cur.rownumber == 12
-    rns: List[int] = []
+    rns: list[int] = []
     for i in cur:
         assert cur.rownumber
         rns.append(cur.rownumber)
@@ -693,6 +693,35 @@ def test_stream_no_row(conn):
     assert recs == []
 
 
+def test_stream_chunked_invalid_size(conn):
+    cur = conn.cursor()
+    with pytest.raises(ValueError, match="size must be >= 1"):
+        next(cur.stream("select 1", size=0))
+
+
+@pytest.mark.libpq("< 17")
+def test_stream_chunked_not_supported(conn):
+    cur = conn.cursor()
+    with pytest.raises(psycopg.NotSupportedError):
+        next(cur.stream("select generate_series(1, 4)", size=2))
+
+
+@pytest.mark.libpq(">= 17")
+def test_stream_chunked(conn):
+    cur = conn.cursor()
+    recs = list(cur.stream("select generate_series(1, 5) as a", size=2))
+    assert recs == [(1,), (2,), (3,), (4,), (5,)]
+
+
+@pytest.mark.libpq(">= 17")
+def test_stream_chunked_row_factory(conn):
+    cur = conn.cursor(row_factory=rows.scalar_row)
+    it = cur.stream("select generate_series(1, 5) as a", size=2)
+    for i in range(1, 6):
+        assert next(it) == i
+        assert [c.name for c in cur.description] == ["a"]
+
+
 @pytest.mark.crdb_skip("no col query")
 def test_stream_no_col(conn):
     cur = conn.cursor()
@@ -715,7 +744,7 @@ def test_stream_error_tx(conn):
     with pytest.raises(psycopg.ProgrammingError):
         for rec in cur.stream("wat"):
             pass
-    assert conn.info.transaction_status == conn.TransactionStatus.INERROR
+    assert conn.info.transaction_status == pq.TransactionStatus.INERROR
 
 
 def test_stream_error_notx(conn):
@@ -724,7 +753,7 @@ def test_stream_error_notx(conn):
     with pytest.raises(psycopg.ProgrammingError):
         for rec in cur.stream("wat"):
             pass
-    assert conn.info.transaction_status == conn.TransactionStatus.IDLE
+    assert conn.info.transaction_status == pq.TransactionStatus.IDLE
 
 
 def test_stream_error_python_to_consume(conn):
@@ -734,8 +763,8 @@ def test_stream_error_python_to_consume(conn):
             for rec in gen:
                 1 / 0
     assert conn.info.transaction_status in (
-        conn.TransactionStatus.INTRANS,
-        conn.TransactionStatus.INERROR,
+        pq.TransactionStatus.INTRANS,
+        pq.TransactionStatus.INERROR,
     )
 
 
@@ -747,7 +776,7 @@ def test_stream_error_python_consumed(conn):
             1 / 0
 
     gen.close()
-    assert conn.info.transaction_status == conn.TransactionStatus.INTRANS
+    assert conn.info.transaction_status == pq.TransactionStatus.INTRANS
 
 
 @pytest.mark.parametrize("autocommit", [False, True])

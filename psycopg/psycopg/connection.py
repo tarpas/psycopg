@@ -12,14 +12,13 @@ from __future__ import annotations
 import logging
 from time import monotonic
 from types import TracebackType
-from typing import Any, Generator, Iterator, List, Optional
-from typing import Type, Union, cast, overload, TYPE_CHECKING
+from typing import Any, Generator, Iterator, cast, overload, TYPE_CHECKING
 from contextlib import contextmanager
 
 from . import pq
 from . import errors as e
 from . import waiting
-from .abc import AdaptContext, ConnDict, ConnParam, Params, PQGen, PQGenConn, Query, RV
+from .abc import AdaptContext, ConnDict, ConnParam, Params, PQGen, Query, RV
 from ._tpc import Xid
 from .rows import Row, RowFactory, tuple_row, args_row
 from .adapt import AdaptersMap
@@ -28,10 +27,10 @@ from ._compat import Self
 from .conninfo import make_conninfo, conninfo_to_dict
 from .conninfo import conninfo_attempts, timeout_from_conninfo
 from ._pipeline import Pipeline
-from ._encodings import pgconn_encoding
 from .generators import notifies
 from .transaction import Transaction
 from .cursor import Cursor
+from ._capabilities import capabilities
 from .server_cursor import ServerCursor
 from ._connection_base import BaseConnection, CursorRow, Notify
 
@@ -61,14 +60,14 @@ class Connection(BaseConnection[Row]):
 
     __module__ = "psycopg"
 
-    cursor_factory: Type[Cursor[Row]]
-    server_cursor_factory: Type[ServerCursor[Row]]
+    cursor_factory: type[Cursor[Row]]
+    server_cursor_factory: type[ServerCursor[Row]]
     row_factory: RowFactory[Row]
-    _pipeline: Optional[Pipeline]
+    _pipeline: Pipeline | None
 
     def __init__(
         self,
-        pgconn: "PGconn",
+        pgconn: PGconn,
         row_factory: RowFactory[Row] = cast(RowFactory[Row], tuple_row),
     ):
         super().__init__(pgconn)
@@ -83,10 +82,10 @@ class Connection(BaseConnection[Row]):
         conninfo: str = "",
         *,
         autocommit: bool = False,
-        prepare_threshold: Optional[int] = 5,
-        context: Optional[AdaptContext] = None,
-        row_factory: Optional[RowFactory[Row]] = None,
-        cursor_factory: Optional[Type[Cursor[Row]]] = None,
+        prepare_threshold: int | None = 5,
+        context: AdaptContext | None = None,
+        row_factory: RowFactory[Row] | None = None,
+        cursor_factory: type[Cursor[Row]] | None = None,
         **kwargs: ConnParam,
     ) -> Self:
         """
@@ -100,8 +99,8 @@ class Connection(BaseConnection[Row]):
         for attempt in attempts:
             try:
                 conninfo = make_conninfo("", **attempt)
-                rv = cls._wait_conn(cls._connect_gen(conninfo), timeout=timeout)
-                break
+                gen = cls._connect_gen(conninfo, timeout=timeout)
+                rv = waiting.wait_conn(gen, interval=_WAIT_INTERVAL)
             except e._NO_TRACEBACK as ex:
                 if len(attempts) > 1:
                     logger.debug(
@@ -112,6 +111,8 @@ class Connection(BaseConnection[Row]):
                         str(ex),
                     )
                 last_ex = ex
+            else:
+                break
 
         if not rv:
             assert last_ex
@@ -132,9 +133,9 @@ class Connection(BaseConnection[Row]):
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
     ) -> None:
         if self.closed:
             return
@@ -182,7 +183,7 @@ class Connection(BaseConnection[Row]):
         name: str,
         *,
         binary: bool = False,
-        scrollable: Optional[bool] = None,
+        scrollable: bool | None = None,
         withhold: bool = False,
     ) -> ServerCursor[Row]: ...
 
@@ -193,7 +194,7 @@ class Connection(BaseConnection[Row]):
         *,
         binary: bool = False,
         row_factory: RowFactory[CursorRow],
-        scrollable: Optional[bool] = None,
+        scrollable: bool | None = None,
         withhold: bool = False,
     ) -> ServerCursor[CursorRow]: ...
 
@@ -202,10 +203,10 @@ class Connection(BaseConnection[Row]):
         name: str = "",
         *,
         binary: bool = False,
-        row_factory: Optional[RowFactory[Any]] = None,
-        scrollable: Optional[bool] = None,
+        row_factory: RowFactory[Any] | None = None,
+        scrollable: bool | None = None,
         withhold: bool = False,
-    ) -> Union[Cursor[Any], ServerCursor[Any]]:
+    ) -> Cursor[Any] | ServerCursor[Any]:
         """
         Return a new `Cursor` to send commands and queries to the connection.
         """
@@ -214,7 +215,7 @@ class Connection(BaseConnection[Row]):
         if not row_factory:
             row_factory = self.row_factory
 
-        cur: Union[Cursor[Any], ServerCursor[Any]]
+        cur: Cursor[Any] | ServerCursor[Any]
         if name:
             cur = self.server_cursor_factory(
                 self,
@@ -234,9 +235,9 @@ class Connection(BaseConnection[Row]):
     def execute(
         self,
         query: Query,
-        params: Optional[Params] = None,
+        params: Params | None = None,
         *,
-        prepare: Optional[bool] = None,
+        prepare: bool | None = None,
         binary: bool = False,
     ) -> Cursor[Row]:
         """Execute a query and return a cursor to read its results."""
@@ -259,9 +260,41 @@ class Connection(BaseConnection[Row]):
         with self.lock:
             self.wait(self._rollback_gen())
 
+    def cancel_safe(self, *, timeout: float = 30.0) -> None:
+        """Cancel the current operation on the connection.
+
+        :param timeout: raise a `~errors.CancellationTimeout` if the
+            cancellation request does not succeed within `timeout` seconds.
+
+        Note that a successful cancel attempt on the client is not a guarantee
+        that the server will successfully manage to cancel the operation.
+
+        This is a non-blocking version of `~Connection.cancel()` which
+        leverages a more secure and improved cancellation feature of the libpq,
+        which is only available from version 17.
+
+        If the underlying libpq is older than version 17, the method will fall
+        back to using the same implementation of `!cancel()`.
+        """
+        if not self._should_cancel():
+            return
+
+        if capabilities.has_cancel_safe():
+            waiting.wait_conn(
+                self._cancel_gen(timeout=timeout), interval=_WAIT_INTERVAL
+            )
+        else:
+            self.cancel()
+
+    def _try_cancel(self, *, timeout: float = 5.0) -> None:
+        try:
+            self.cancel_safe(timeout=timeout)
+        except Exception as ex:
+            logger.warning("query cancellation failed: %s", ex)
+
     @contextmanager
     def transaction(
-        self, savepoint_name: Optional[str] = None, force_rollback: bool = False
+        self, savepoint_name: str | None = None, force_rollback: bool = False
     ) -> Iterator[Transaction]:
         """
         Start a context block with a new transaction or nested transaction.
@@ -281,7 +314,7 @@ class Connection(BaseConnection[Row]):
                 yield tx
 
     def notifies(
-        self, *, timeout: Optional[float] = None, stop_after: Optional[int] = None
+        self, *, timeout: float | None = None, stop_after: int | None = None
     ) -> Generator[Notify, None, None]:
         """
         Yield `Notify` objects as soon as they are received from the database.
@@ -293,43 +326,42 @@ class Connection(BaseConnection[Row]):
             notifications arrives in the same packet.
         """
         # Allow interrupting the wait with a signal by reducing a long timeout
-        # into shorter interval.
+        # into shorter intervals.
         if timeout is not None:
             deadline = monotonic() + timeout
-            timeout = min(timeout, _WAIT_INTERVAL)
+            interval = min(timeout, _WAIT_INTERVAL)
         else:
             deadline = None
-            timeout = _WAIT_INTERVAL
+            interval = _WAIT_INTERVAL
 
         nreceived = 0
 
-        while True:
-            # Collect notifications. Also get the connection encoding if any
-            # notification is received to makes sure that they are consistent.
-            try:
-                with self.lock:
-                    ns = self.wait(notifies(self.pgconn), timeout=timeout)
-                    if ns:
-                        enc = pgconn_encoding(self.pgconn)
-            except e._NO_TRACEBACK as ex:
-                raise ex.with_traceback(None)
+        with self.lock:
+            enc = self.pgconn._encoding
+            while True:
+                try:
+                    ns = self.wait(notifies(self.pgconn), interval=interval)
+                except e._NO_TRACEBACK as ex:
+                    raise ex.with_traceback(None)
 
-            # Emit the notifications received.
-            for pgn in ns:
-                n = Notify(pgn.relname.decode(enc), pgn.extra.decode(enc), pgn.be_pid)
-                yield n
-                nreceived += 1
+                # Emit the notifications received.
+                for pgn in ns:
+                    n = Notify(
+                        pgn.relname.decode(enc), pgn.extra.decode(enc), pgn.be_pid
+                    )
+                    yield n
+                    nreceived += 1
 
-            # Stop if we have received enough notifications.
-            if stop_after is not None and nreceived >= stop_after:
-                break
-
-            # Check the deadline after the loop to ensure that timeout=0
-            # polls at least once.
-            if deadline:
-                timeout = min(_WAIT_INTERVAL, deadline - monotonic())
-                if timeout < 0.0:
+                # Stop if we have received enough notifications.
+                if stop_after is not None and nreceived >= stop_after:
                     break
+
+                # Check the deadline after the loop to ensure that timeout=0
+                # polls at least once.
+                if deadline:
+                    interval = min(_WAIT_INTERVAL, deadline - monotonic())
+                    if interval < 0.0:
+                        break
 
     @contextmanager
     def pipeline(self) -> Iterator[Pipeline]:
@@ -351,7 +383,7 @@ class Connection(BaseConnection[Row]):
                     assert pipeline is self._pipeline
                     self._pipeline = None
 
-    def wait(self, gen: PQGen[RV], timeout: Optional[float] = _WAIT_INTERVAL) -> RV:
+    def wait(self, gen: PQGen[RV], interval: float | None = _WAIT_INTERVAL) -> RV:
         """
         Consume a generator operating on the connection.
 
@@ -359,22 +391,17 @@ class Connection(BaseConnection[Row]):
         fd (i.e. not on connect and reset).
         """
         try:
-            return waiting.wait(gen, self.pgconn.socket, timeout=timeout)
+            return waiting.wait(gen, self.pgconn.socket, interval=interval)
         except _INTERRUPTED:
             if self.pgconn.transaction_status == ACTIVE:
                 # On Ctrl-C, try to cancel the query in the server, otherwise
                 # the connection will remain stuck in ACTIVE state.
-                self._try_cancel(self.pgconn)
+                self._try_cancel(timeout=5.0)
                 try:
-                    waiting.wait(gen, self.pgconn.socket, timeout=timeout)
+                    waiting.wait(gen, self.pgconn.socket, interval=interval)
                 except e.QueryCanceled:
                     pass  # as expected
             raise
-
-    @classmethod
-    def _wait_conn(cls, gen: PQGenConn[RV], timeout: Optional[int]) -> RV:
-        """Consume a connection generator."""
-        return waiting.wait_conn(gen, timeout)
 
     def _set_autocommit(self, value: bool) -> None:
         self.set_autocommit(value)
@@ -384,31 +411,31 @@ class Connection(BaseConnection[Row]):
         with self.lock:
             self.wait(self._set_autocommit_gen(value))
 
-    def _set_isolation_level(self, value: Optional[IsolationLevel]) -> None:
+    def _set_isolation_level(self, value: IsolationLevel | None) -> None:
         self.set_isolation_level(value)
 
-    def set_isolation_level(self, value: Optional[IsolationLevel]) -> None:
+    def set_isolation_level(self, value: IsolationLevel | None) -> None:
         """Method version of the `~Connection.isolation_level` setter."""
         with self.lock:
             self.wait(self._set_isolation_level_gen(value))
 
-    def _set_read_only(self, value: Optional[bool]) -> None:
+    def _set_read_only(self, value: bool | None) -> None:
         self.set_read_only(value)
 
-    def set_read_only(self, value: Optional[bool]) -> None:
+    def set_read_only(self, value: bool | None) -> None:
         """Method version of the `~Connection.read_only` setter."""
         with self.lock:
             self.wait(self._set_read_only_gen(value))
 
-    def _set_deferrable(self, value: Optional[bool]) -> None:
+    def _set_deferrable(self, value: bool | None) -> None:
         self.set_deferrable(value)
 
-    def set_deferrable(self, value: Optional[bool]) -> None:
+    def set_deferrable(self, value: bool | None) -> None:
         """Method version of the `~Connection.deferrable` setter."""
         with self.lock:
             self.wait(self._set_deferrable_gen(value))
 
-    def tpc_begin(self, xid: Union[Xid, str]) -> None:
+    def tpc_begin(self, xid: Xid | str) -> None:
         """
         Begin a TPC transaction with the given transaction ID `!xid`.
         """
@@ -425,21 +452,21 @@ class Connection(BaseConnection[Row]):
         except e.ObjectNotInPrerequisiteState as ex:
             raise e.NotSupportedError(str(ex)) from None
 
-    def tpc_commit(self, xid: Union[Xid, str, None] = None) -> None:
+    def tpc_commit(self, xid: Xid | str | None = None) -> None:
         """
         Commit a prepared two-phase transaction.
         """
         with self.lock:
             self.wait(self._tpc_finish_gen("COMMIT", xid))
 
-    def tpc_rollback(self, xid: Union[Xid, str, None] = None) -> None:
+    def tpc_rollback(self, xid: Xid | str | None = None) -> None:
         """
         Roll back a prepared two-phase transaction.
         """
         with self.lock:
             self.wait(self._tpc_finish_gen("ROLLBACK", xid))
 
-    def tpc_recover(self) -> List[Xid]:
+    def tpc_recover(self) -> list[Xid]:
         self._check_tpc()
         status = self.info.transaction_status
         with self.cursor(row_factory=args_row(Xid._from_record)) as cur:

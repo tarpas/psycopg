@@ -4,30 +4,32 @@ commands pipeline management
 
 # Copyright (C) 2021 The Psycopg Team
 
+from __future__ import annotations
+
 import logging
 from types import TracebackType
-from typing import Any, List, Optional, Union, Tuple, Type, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from . import pq
 from . import errors as e
 from .abc import PipelineCommand, PQGen
 from ._compat import Deque, Self, TypeAlias
 from .pq.misc import connection_summary
-from ._encodings import pgconn_encoding
-from ._preparing import Key, Prepare
 from .generators import pipeline_communicate, fetch_many, send
+from ._capabilities import capabilities
 
 if TYPE_CHECKING:
     from .pq.abc import PGresult
-    from ._cursor_base import BaseCursor
     from .connection import Connection
+    from ._preparing import Key, Prepare  # noqa: F401
+    from ._cursor_base import BaseCursor  # noqa: F401
     from ._connection_base import BaseConnection
     from .connection_async import AsyncConnection
 
 
-PendingResult: TypeAlias = Union[
-    None, Tuple["BaseCursor[Any, Any]", Optional[Tuple[Key, Prepare, bytes]]]
-]
+PendingResult: TypeAlias = (
+    "tuple[BaseCursor[Any, Any], tuple[Key, Prepare, bytes] | None] | None"
+)
 
 FATAL_ERROR = pq.ExecStatus.FATAL_ERROR
 PIPELINE_ABORTED = pq.ExecStatus.PIPELINE_ABORTED
@@ -41,9 +43,8 @@ logger = logging.getLogger("psycopg")
 class BasePipeline:
     command_queue: Deque[PipelineCommand]
     result_queue: Deque[PendingResult]
-    _is_supported: Optional[bool] = None
 
-    def __init__(self, conn: "BaseConnection[Any]") -> None:
+    def __init__(self, conn: BaseConnection[Any]) -> None:
         self._conn = conn
         self.pgconn = conn.pgconn
         self.command_queue = Deque[PipelineCommand]()
@@ -62,37 +63,10 @@ class BasePipeline:
     @classmethod
     def is_supported(cls) -> bool:
         """Return `!True` if the psycopg libpq wrapper supports pipeline mode."""
-        if BasePipeline._is_supported is None:
-            BasePipeline._is_supported = not cls._not_supported_reason()
-        return BasePipeline._is_supported
-
-    @classmethod
-    def _not_supported_reason(cls) -> str:
-        """Return the reason why the pipeline mode is not supported.
-
-        Return an empty string if pipeline mode is supported.
-        """
-        # Support only depends on the libpq functions available in the pq
-        # wrapper, not on the database version.
-        if pq.version() < 140000:
-            return (
-                f"libpq too old {pq.version()};"
-                " v14 or greater required for pipeline mode"
-            )
-
-        if pq.__build_version__ < 140000:
-            return (
-                f"libpq too old: module built for {pq.__build_version__};"
-                " v14 or greater required for pipeline mode"
-            )
-
-        return ""
+        return capabilities.has_pipeline()
 
     def _enter_gen(self) -> PQGen[None]:
-        if not self.is_supported():
-            raise e.NotSupportedError(
-                f"pipeline mode not supported: {self._not_supported_reason()}"
-            )
+        capabilities.has_pipeline(check=True)
         if self.level == 0:
             self.pgconn.enter_pipeline_mode()
         elif self.command_queue or self.pgconn.transaction_status == ACTIVE:
@@ -105,7 +79,7 @@ class BasePipeline:
             yield from self._sync_gen()
         self.level += 1
 
-    def _exit(self, exc: Optional[BaseException]) -> None:
+    def _exit(self, exc: BaseException | None) -> None:
         self.level -= 1
         if self.level == 0 and self.pgconn.status != BAD:
             try:
@@ -182,9 +156,7 @@ class BasePipeline:
         if exception is not None:
             raise exception
 
-    def _process_results(
-        self, queued: PendingResult, results: List["PGresult"]
-    ) -> None:
+    def _process_results(self, queued: PendingResult, results: list[PGresult]) -> None:
         """Process a results set fetched from the current pipeline.
 
         This matches 'results' with its respective element in the pipeline
@@ -195,7 +167,7 @@ class BasePipeline:
         if queued is None:
             (result,) = results
             if result.status == FATAL_ERROR:
-                raise e.error_from_result(result, encoding=pgconn_encoding(self.pgconn))
+                raise e.error_from_result(result, encoding=self.pgconn._encoding)
             elif result.status == PIPELINE_ABORTED:
                 raise e.PipelineAborted("pipeline aborted")
         else:
@@ -217,9 +189,9 @@ class Pipeline(BasePipeline):
     """Handler for connection in pipeline mode."""
 
     __module__ = "psycopg"
-    _conn: "Connection[Any]"
+    _conn: Connection[Any]
 
-    def __init__(self, conn: "Connection[Any]") -> None:
+    def __init__(self, conn: Connection[Any]) -> None:
         super().__init__(conn)
 
     def sync(self) -> None:
@@ -239,9 +211,9 @@ class Pipeline(BasePipeline):
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
     ) -> None:
         try:
             with self._conn.lock:
@@ -260,9 +232,9 @@ class AsyncPipeline(BasePipeline):
     """Handler for async connection in pipeline mode."""
 
     __module__ = "psycopg"
-    _conn: "AsyncConnection[Any]"
+    _conn: AsyncConnection[Any]
 
-    def __init__(self, conn: "AsyncConnection[Any]") -> None:
+    def __init__(self, conn: AsyncConnection[Any]) -> None:
         super().__init__(conn)
 
     async def sync(self) -> None:
@@ -279,9 +251,9 @@ class AsyncPipeline(BasePipeline):
 
     async def __aexit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
     ) -> None:
         try:
             async with self._conn.lock:

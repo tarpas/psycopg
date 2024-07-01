@@ -180,7 +180,14 @@ The `!Cursor` class
         .. __: https://materialize.com/docs/sql/subscribe/
         .. __: https://www.cockroachlabs.com/docs/stable/changefeed-for.html
 
-        The parameters are the same of `execute()`.
+        The parameters are the same of `execute()`, except for `size` which
+        can be used to set results retrieval by chunks instead of row-by-row.
+
+        .. note::
+
+            This `size` parameter is only available from libpq 17, you can use
+            the `~Capabilities.has_stream_chunked` capability to check if this
+            is supported.
 
         .. warning::
 
@@ -316,20 +323,6 @@ The `!Cursor` class
           is text or binary.
 
 
-The `!RawCursor` class
-----------------------
-
-.. seealso:: See :ref:`raw-query-cursors` for details.
-
-.. autoclass:: RawCursor
-
-    This `Cursor` subclass has the same interface of the parent class but
-    supports placeholders in PostgreSQL format (``$1``, ``$2``...) rather than
-    in Python format (``%s``). Only positional parameters are supported.
-
-    .. versionadded:: 3.2
-
-
 The `!ClientCursor` class
 -------------------------
 
@@ -460,6 +453,30 @@ The `!ServerCursor` class
         .. _MOVE: https://www.postgresql.org/docs/current/sql-fetch.html
 
 
+The `!RawCursor` and `!RawServerCursor` class
+---------------------------------------------
+
+.. seealso:: See :ref:`raw-query-cursors` for details.
+
+.. autoclass:: RawCursor
+
+    This `Cursor` subclass has the same interface of the parent class but
+    supports placeholders in PostgreSQL format (``$1``, ``$2``...) rather than
+    in Python format (``%s``). Only positional parameters are supported.
+
+    .. versionadded:: 3.2
+
+
+.. autoclass:: RawServerCursor
+
+    This `ServerCursor` subclass has the same interface of the parent class but
+    supports placeholders in PostgreSQL format (``$1``, ``$2``...) rather than
+    in Python format (``%s``). Only positional parameters are supported.
+
+    .. versionadded:: 3.2
+
+
+
 Async cursor classes
 --------------------
 
@@ -527,14 +544,6 @@ semantic with an `!async` interface. The main interface is described in
 
 
 
-.. autoclass:: AsyncRawCursor
-
-    This class is the `!async` equivalent of `RawCursor`. The differences 
-    w.r.t. the sync counterpart are the same described in `AsyncCursor`.
-
-    .. versionadded:: 3.2
-
-
 .. autoclass:: AsyncClientCursor
 
     This class is the `!async` equivalent of `ClientCursor`. The differences
@@ -575,3 +584,19 @@ semantic with an `!async` interface. The main interface is described in
                     ...
 
     .. automethod:: scroll
+
+
+.. autoclass:: AsyncRawCursor
+
+    This class is the `!async` equivalent of `RawCursor`. The differences
+    w.r.t. the sync counterpart are the same described in `AsyncCursor`.
+
+    .. versionadded:: 3.2
+
+
+.. autoclass:: AsyncRawServerCursor
+
+    This class is the `!async` equivalent of `RawServerCursor`. The differences
+    w.r.t. the sync counterpart are the same described in `AsyncServerCursor`.
+
+    .. versionadded:: 3.2

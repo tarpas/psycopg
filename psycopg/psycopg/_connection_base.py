@@ -4,10 +4,11 @@ psycopg connection objects
 
 # Copyright (C) 2020 The Psycopg Team
 
+from __future__ import annotations
+
+import sys
 import logging
-from typing import Callable, Generic
-from typing import List, NamedTuple, Optional, Tuple, Union
-from typing import TYPE_CHECKING
+from typing import Callable, Generic, NamedTuple, TYPE_CHECKING
 from weakref import ref, ReferenceType
 from warnings import warn
 from functools import partial
@@ -25,8 +26,8 @@ from ._enums import IsolationLevel
 from ._compat import LiteralString, Self, TypeAlias, TypeVar
 from .pq.misc import connection_summary
 from ._pipeline import BasePipeline
-from ._encodings import pgconn_encoding
 from ._preparing import PrepareManager
+from ._capabilities import capabilities
 from ._connection_info import ConnectionInfo
 
 if TYPE_CHECKING:
@@ -49,6 +50,8 @@ FATAL_ERROR = pq.ExecStatus.FATAL_ERROR
 
 IDLE = pq.TransactionStatus.IDLE
 INTRANS = pq.TransactionStatus.INTRANS
+
+_HAS_SEND_CLOSE = capabilities.has_send_close_prepared()
 
 logger = logging.getLogger("psycopg")
 
@@ -92,26 +95,22 @@ class BaseConnection(Generic[Row]):
     ProgrammingError = e.ProgrammingError
     NotSupportedError = e.NotSupportedError
 
-    # Enums useful for the connection
-    ConnStatus = pq.ConnStatus
-    TransactionStatus = pq.TransactionStatus
-
-    def __init__(self, pgconn: "PGconn"):
+    def __init__(self, pgconn: PGconn):
         self.pgconn = pgconn
         self._autocommit = False
 
         # None, but set to a copy of the global adapters map as soon as requested.
-        self._adapters: Optional[AdaptersMap] = None
+        self._adapters: AdaptersMap | None = None
 
-        self._notice_handlers: List[NoticeHandler] = []
-        self._notify_handlers: List[NotifyHandler] = []
+        self._notice_handlers: list[NoticeHandler] = []
+        self._notify_handlers: list[NotifyHandler] = []
 
         # Number of transaction blocks currently entered
         self._num_transactions = 0
 
         self._closed = False  # closed by an explicit close()
         self._prepared: PrepareManager = PrepareManager()
-        self._tpc: Optional[Tuple[Xid, bool]] = None  # xid, prepared
+        self._tpc: tuple[Xid, bool] | None = None  # xid, prepared
 
         wself = ref(self)
         pgconn.notice_handler = partial(BaseConnection._notice_handler, wself)
@@ -119,16 +118,16 @@ class BaseConnection(Generic[Row]):
 
         # Attribute is only set if the connection is from a pool so we can tell
         # apart a connection in the pool too (when _pool = None)
-        self._pool: Optional["BasePool"]
+        self._pool: BasePool | None
 
-        self._pipeline: Optional[BasePipeline] = None
+        self._pipeline: BasePipeline | None = None
 
         # Time after which the connection should be closed
         self._expire_at: float
 
-        self._isolation_level: Optional[IsolationLevel] = None
-        self._read_only: Optional[bool] = None
-        self._deferrable: Optional[bool] = None
+        self._isolation_level: IsolationLevel | None = None
+        self._read_only: bool | None = None
+        self._deferrable: bool | None = None
         self._begin_statement = b""
 
     def __del__(self) -> None:
@@ -187,58 +186,58 @@ class BaseConnection(Generic[Row]):
         self._autocommit = bool(value)
 
     @property
-    def isolation_level(self) -> Optional[IsolationLevel]:
+    def isolation_level(self) -> IsolationLevel | None:
         """
         The isolation level of the new transactions started on the connection.
         """
         return self._isolation_level
 
     @isolation_level.setter
-    def isolation_level(self, value: Optional[IsolationLevel]) -> None:
+    def isolation_level(self, value: IsolationLevel | None) -> None:
         self._set_isolation_level(value)
 
-    def _set_isolation_level(self, value: Optional[IsolationLevel]) -> None:
+    def _set_isolation_level(self, value: IsolationLevel | None) -> None:
         raise NotImplementedError
 
-    def _set_isolation_level_gen(self, value: Optional[IsolationLevel]) -> PQGen[None]:
+    def _set_isolation_level_gen(self, value: IsolationLevel | None) -> PQGen[None]:
         yield from self._check_intrans_gen("isolation_level")
         self._isolation_level = IsolationLevel(value) if value is not None else None
         self._begin_statement = b""
 
     @property
-    def read_only(self) -> Optional[bool]:
+    def read_only(self) -> bool | None:
         """
         The read-only state of the new transactions started on the connection.
         """
         return self._read_only
 
     @read_only.setter
-    def read_only(self, value: Optional[bool]) -> None:
+    def read_only(self, value: bool | None) -> None:
         self._set_read_only(value)
 
-    def _set_read_only(self, value: Optional[bool]) -> None:
+    def _set_read_only(self, value: bool | None) -> None:
         raise NotImplementedError
 
-    def _set_read_only_gen(self, value: Optional[bool]) -> PQGen[None]:
+    def _set_read_only_gen(self, value: bool | None) -> PQGen[None]:
         yield from self._check_intrans_gen("read_only")
         self._read_only = bool(value) if value is not None else None
         self._begin_statement = b""
 
     @property
-    def deferrable(self) -> Optional[bool]:
+    def deferrable(self) -> bool | None:
         """
         The deferrable state of the new transactions started on the connection.
         """
         return self._deferrable
 
     @deferrable.setter
-    def deferrable(self, value: Optional[bool]) -> None:
+    def deferrable(self, value: bool | None) -> None:
         self._set_deferrable(value)
 
-    def _set_deferrable(self, value: Optional[bool]) -> None:
+    def _set_deferrable(self, value: bool | None) -> None:
         raise NotImplementedError
 
-    def _set_deferrable_gen(self, value: Optional[bool]) -> PQGen[None]:
+    def _set_deferrable_gen(self, value: bool | None) -> PQGen[None]:
         yield from self._check_intrans_gen("deferrable")
         self._deferrable = bool(value) if value is not None else None
         self._begin_statement = b""
@@ -275,7 +274,7 @@ class BaseConnection(Generic[Row]):
         return self._adapters
 
     @property
-    def connection(self) -> "BaseConnection[Row]":
+    def connection(self) -> BaseConnection[Row]:
         # implement the AdaptContext protocol
         return self
 
@@ -290,28 +289,29 @@ class BaseConnection(Generic[Row]):
 
     def cancel(self) -> None:
         """Cancel the current operation on the connection."""
-        # No-op if the connection is closed
+        if self._should_cancel():
+            c = self.pgconn.get_cancel()
+            c.cancel()
+
+    def _should_cancel(self) -> bool:
+        """Check whether the current command should actually be cancelled when
+        invoking cancel*().
+        """
+        # cancel() is a no-op if the connection is closed;
         # this allows to use the method as callback handler without caring
         # about its life.
         if self.closed:
-            return
-
+            return False
         if self._tpc and self._tpc[1]:
             raise e.ProgrammingError(
                 "cancel() cannot be used with a prepared two-phase transaction"
             )
+        return True
 
-        self._try_cancel(self.pgconn)
-
-    @classmethod
-    def _try_cancel(cls, pgconn: "PGconn") -> None:
-        try:
-            # Can fail if the connection is closed
-            c = pgconn.get_cancel()
-        except Exception as ex:
-            logger.warning("couldn't try to cancel query: %s", ex)
-        else:
-            c.cancel()
+    def _cancel_gen(self, *, timeout: float) -> PQGenConn[None]:
+        cancel_conn = self.pgconn.cancel_conn()
+        cancel_conn.start()
+        yield from generators.cancel(cancel_conn, timeout=timeout)
 
     def add_notice_handler(self, callback: NoticeHandler) -> None:
         """
@@ -333,13 +333,13 @@ class BaseConnection(Generic[Row]):
 
     @staticmethod
     def _notice_handler(
-        wself: "ReferenceType[BaseConnection[Row]]", res: "PGresult"
+        wself: ReferenceType[BaseConnection[Row]], res: PGresult
     ) -> None:
         self = wself()
         if not (self and self._notice_handlers):
             return
 
-        diag = e.Diagnostic(res, pgconn_encoding(self.pgconn))
+        diag = e.Diagnostic(res, self.pgconn._encoding)
         for cb in self._notice_handlers:
             try:
                 cb(diag)
@@ -366,19 +366,19 @@ class BaseConnection(Generic[Row]):
 
     @staticmethod
     def _notify_handler(
-        wself: "ReferenceType[BaseConnection[Row]]", pgn: pq.PGnotify
+        wself: ReferenceType[BaseConnection[Row]], pgn: pq.PGnotify
     ) -> None:
         self = wself()
         if not (self and self._notify_handlers):
             return
 
-        enc = pgconn_encoding(self.pgconn)
+        enc = self.pgconn._encoding
         n = Notify(pgn.relname.decode(enc), pgn.extra.decode(enc), pgn.be_pid)
         for cb in self._notify_handlers:
             cb(n)
 
     @property
-    def prepare_threshold(self) -> Optional[int]:
+    def prepare_threshold(self) -> int | None:
         """
         Number of times a query is executed before it is prepared.
 
@@ -392,20 +392,24 @@ class BaseConnection(Generic[Row]):
         return self._prepared.prepare_threshold
 
     @prepare_threshold.setter
-    def prepare_threshold(self, value: Optional[int]) -> None:
+    def prepare_threshold(self, value: int | None) -> None:
         self._prepared.prepare_threshold = value
 
     @property
-    def prepared_max(self) -> int:
+    def prepared_max(self) -> int | None:
         """
         Maximum number of prepared statements on the connection.
 
-        Default value: 100
+        `!None` means no max number of prepared statements. The default value
+        is 100.
         """
-        return self._prepared.prepared_max
+        rv = self._prepared.prepared_max
+        return rv if rv != sys.maxsize else None
 
     @prepared_max.setter
-    def prepared_max(self, value: int) -> None:
+    def prepared_max(self, value: int | None) -> None:
+        if value is None:
+            value = sys.maxsize
         self._prepared.prepared_max = value
 
     # Generators to perform high-level operations on the connection
@@ -419,15 +423,17 @@ class BaseConnection(Generic[Row]):
     # should have a lock and hold it before calling and consuming them.
 
     @classmethod
-    def _connect_gen(cls, conninfo: str = "") -> PQGenConn[Self]:
+    def _connect_gen(
+        cls, conninfo: str = "", *, timeout: float = 0.0
+    ) -> PQGenConn[Self]:
         """Generator to connect to the database and create a new instance."""
-        pgconn = yield from generators.connect(conninfo)
+        pgconn = yield from generators.connect(conninfo, timeout=timeout)
         conn = cls(pgconn)
         return conn
 
     def _exec_command(
         self, command: Query, result_format: pq.Format = TEXT
-    ) -> PQGen[Optional["PGresult"]]:
+    ) -> PQGen[PGresult | None]:
         """
         Generator to send a command and receive the result to the backend.
 
@@ -437,7 +443,7 @@ class BaseConnection(Generic[Row]):
         self._check_connection_ok()
 
         if isinstance(command, str):
-            command = command.encode(pgconn_encoding(self.pgconn))
+            command = command.encode(self.pgconn._encoding)
         elif isinstance(command, Composable):
             command = command.as_bytes(self)
 
@@ -452,18 +458,63 @@ class BaseConnection(Generic[Row]):
             self._pipeline.result_queue.append(None)
             return None
 
-        self.pgconn.send_query_params(command, None, result_format=result_format)
+        # Unless needed, use the simple query protocol, e.g. to interact with
+        # pgbouncer. In pipeline mode we always use the advanced query protocol
+        # instead, see #350
+        if result_format == TEXT:
+            self.pgconn.send_query(command)
+        else:
+            self.pgconn.send_query_params(command, None, result_format=result_format)
 
         result = (yield from generators.execute(self.pgconn))[-1]
         if result.status != COMMAND_OK and result.status != TUPLES_OK:
             if result.status == FATAL_ERROR:
-                raise e.error_from_result(result, encoding=pgconn_encoding(self.pgconn))
+                raise e.error_from_result(result, encoding=self.pgconn._encoding)
             else:
                 raise e.InterfaceError(
                     f"unexpected result {pq.ExecStatus(result.status).name}"
                     f" from command {command.decode()!r}"
                 )
         return result
+
+    def _deallocate(self, name: bytes | None) -> PQGen[None]:
+        """
+        Deallocate one, or all, prepared statement in the session.
+
+        ``name == None`` stands for DEALLOCATE ALL.
+
+        If possible, use protocol-level commands; otherwise use SQL statements.
+
+        Note that PgBouncer doesn't support DEALLOCATE name, but it supports
+        protocol-level Close from 1.21 and DEALLOCATE ALL from 1.22.
+        """
+        if name is None or not _HAS_SEND_CLOSE:
+            stmt = b"DEALLOCATE " + name if name is not None else b"DEALLOCATE ALL"
+            yield from self._exec_command(stmt)
+            return
+
+        self._check_connection_ok()
+
+        if self._pipeline:
+            cmd = partial(
+                self.pgconn.send_close_prepared,
+                name,
+            )
+            self._pipeline.command_queue.append(cmd)
+            self._pipeline.result_queue.append(None)
+            return
+
+        self.pgconn.send_close_prepared(name)
+
+        result = (yield from generators.execute(self.pgconn))[-1]
+        if result.status != COMMAND_OK:
+            if result.status == FATAL_ERROR:
+                raise e.error_from_result(result, encoding=self.pgconn._encoding)
+            else:
+                raise e.InterfaceError(
+                    f"unexpected result {pq.ExecStatus(result.status).name}"
+                    " from sending closing prepared statement message"
+                )
 
     def _check_connection_ok(self) -> None:
         if self.pgconn.status == OK:
@@ -550,8 +601,7 @@ class BaseConnection(Generic[Row]):
 
         yield from self._exec_command(b"ROLLBACK")
         self._prepared.clear()
-        for cmd in self._prepared.get_maintenance_commands():
-            yield from self._exec_command(cmd)
+        yield from self._prepared.maintain_gen(self)
 
         if self._pipeline:
             yield from self._pipeline._sync_gen()
@@ -569,7 +619,7 @@ class BaseConnection(Generic[Row]):
         self._check_tpc()
         return Xid.from_parts(format_id, gtrid, bqual)
 
-    def _tpc_begin_gen(self, xid: Union[Xid, str]) -> PQGen[None]:
+    def _tpc_begin_gen(self, xid: Xid | str) -> PQGen[None]:
         self._check_tpc()
 
         if not isinstance(xid, Xid):
@@ -605,7 +655,7 @@ class BaseConnection(Generic[Row]):
             yield from self._pipeline._sync_gen()
 
     def _tpc_finish_gen(
-        self, action: LiteralString, xid: Union[Xid, str, None]
+        self, action: LiteralString, xid: Xid | str | None
     ) -> PQGen[None]:
         fname = f"tpc_{action.lower()}()"
         if xid is None:

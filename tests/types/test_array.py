@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import gc
 from math import prod
-from typing import List, Any
+from typing import Any
 from decimal import Decimal
 
 import pytest
@@ -13,6 +15,7 @@ from psycopg.types import TypeInfo
 from psycopg.postgres import types as builtins
 from psycopg.types.array import register_array
 
+from ..test_adapt import StrNoneDumper, StrNoneBinaryDumper
 
 tests_str = [
     ([[[[[["a"]]]]]], "{{{{{{a}}}}}}"),
@@ -47,6 +50,16 @@ def test_dump_list_str(conn, obj, want, fmt_in):
     cur = conn.cursor()
     cur.execute(f"select %{fmt_in.value}::text[] = %s::text[]", (obj, want))
     assert cur.fetchone()[0]
+
+
+@pytest.mark.parametrize("fmt_in", PyFormat)
+def test_dump_list_str_none(conn, fmt_in):
+    cur = conn.cursor()
+    cur.adapters.register_dumper(str, StrNoneDumper)
+    cur.adapters.register_dumper(str, StrNoneBinaryDumper)
+
+    cur.execute(f"select %{fmt_in.value}::text[]", (["foo", "", "bar"],))
+    assert cur.fetchone()[0] == ["foo", None, "bar"]
 
 
 @pytest.mark.parametrize("fmt_out", pq.Format)
@@ -295,7 +308,7 @@ def test_load_array_no_comma_separator(conn):
 @pytest.mark.parametrize("fmt_out", pq.Format)
 def test_load_nested_array(conn, fmt_out):
     dims = [3, 4, 5, 6]
-    a: List[Any] = list(range(prod(dims)))
+    a: list[Any] = list(range(prod(dims)))
     for dim in dims[-1:0:-1]:
         a = [a[i : i + dim] for i in range(0, len(a), dim)]
 

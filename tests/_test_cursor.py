@@ -2,8 +2,10 @@
 Support module for test_cursor[_async].py
 """
 
+from __future__ import annotations
+
 import re
-from typing import Any, List, Match, Union
+from typing import Any, Match
 
 import pytest
 import psycopg
@@ -29,7 +31,9 @@ def execmany(svcconn, _execmany):
 
 def ph(cur: Any, query: str) -> str:
     """Change placeholders in a query from %s to $n if testing  a raw cursor"""
-    if not isinstance(cur, (psycopg.RawCursor, psycopg.AsyncRawCursor)):
+    from psycopg.raw_cursor import RawCursorMixin
+
+    if not isinstance(cur, RawCursorMixin):
         return query
 
     if "%(" in query:
@@ -47,8 +51,8 @@ def ph(cur: Any, query: str) -> str:
 
 
 def my_row_factory(
-    cursor: Union[psycopg.Cursor[List[str]], psycopg.AsyncCursor[List[str]]]
-) -> RowMaker[List[str]]:
+    cursor: psycopg.Cursor[list[str]] | psycopg.AsyncCursor[list[str]],
+) -> RowMaker[list[str]]:
     if cursor.description is not None:
         titles = [c.name for c in cursor.description]
 
